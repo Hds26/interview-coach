@@ -8,6 +8,8 @@ Recommend the next block using the plan's minutes and acceptance criteria.
 Do not invent scores, dates, or criteria that the tools did not return.
 When a tool returns an error, tell the learner the next command to run.
 Stay concrete: one focus, the minute budget, and the measurable check.
+Topic scores include a confidence percent from how much information the answers carried.
+Open answers are scored with the local rubric. Do not call a model to grade them.
 """
 
 
@@ -46,14 +48,16 @@ def render_tool_reply(tool_name: str, payload: dict) -> str:
         for score in payload["scores"]:
             lines.append(
                 f"- {score['label']}: ability {score['ability']}, "
-                f"mastery {score['mastery']}, {score['correct']}/{score['answered']}"
+                f"mastery {score['mastery']}, confidence {score.get('confidence', '0%')}, "
+                f"{score['correct']}/{score['answered']}"
             )
         if payload.get("weakest"):
             lines.append("Spend the next block on " + ", ".join(payload["weakest"]) + ".")
         return "\n".join(lines)
     if tool_name == "get_profile":
         return (
-            f"Profile {payload['name']}, role {payload['target_role']}, level {payload['level']}, "
+            f"Profile {payload['name']}, role {payload['target_role']}, "
+            f"target {payload.get('target_id', 'generic_tech')}, level {payload['level']}, "
             f"{payload['daily_minutes']} minutes/day."
         )
     return "No local tool result to render."

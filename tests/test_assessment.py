@@ -5,19 +5,29 @@ from interview_coach.assessment.engine import AdaptiveAssessment
 
 
 def test_bank_covers_every_topic_and_difficulty():
-    ids = [question.id for question in QUESTIONS]
-    assert len(ids) == len(set(ids))
     bank = QuestionBank()
+    ids = [question.id for question in bank.questions]
+    assert len(ids) == len(set(ids))
+    assert len(ids) > len(QUESTIONS)
     for topic in TOPICS:
         items = bank.for_topic(topic)
-        assert {question.difficulty for question in items} == {1, 2, 3, 4, 5}
+        multiple_choice = [question for question in items if question.kind == "mcq"]
+        opened = [question for question in items if question.kind == "open"]
+        assert {question.difficulty for question in multiple_choice} == {1, 2, 3, 4, 5}
+        assert opened
         for question in items:
-            assert 0 <= question.answer < len(question.choices)
+            assert question.tags
+            assert question.discrimination > 0
+            if question.kind == "open":
+                assert question.answer == -1
+                assert question.rubric
+            else:
+                assert 0 <= question.answer < len(question.choices)
 
 
 def test_correct_answers_move_toward_harder_items():
     bank = QuestionBank()
-    engine = AdaptiveAssessment(bank, topics=["complexity"], prior={"complexity": 1.0})
+    engine = AdaptiveAssessment(bank, topics=["complexity"], prior={"complexity": 1.0}, kinds=["mcq"])
     seen = []
     for _ in range(4):
         question = engine.next_question()
@@ -30,7 +40,7 @@ def test_correct_answers_move_toward_harder_items():
 
 def test_wrong_answers_move_toward_easier_items():
     bank = QuestionBank()
-    engine = AdaptiveAssessment(bank, topics=["databases"], prior={"databases": 5.0})
+    engine = AdaptiveAssessment(bank, topics=["databases"], prior={"databases": 5.0}, kinds=["mcq"])
     seen = []
     for _ in range(4):
         question = engine.next_question()
@@ -44,14 +54,16 @@ def test_wrong_answers_move_toward_easier_items():
 
 def test_questions_are_not_repeated():
     bank = QuestionBank()
-    engine = AdaptiveAssessment(bank, topics=["python"])
+    engine = AdaptiveAssessment(bank, topics=["python"], kinds=["mcq"])
+    available = [question for question in bank.for_topic("python") if question.kind == "mcq"]
     asked = []
-    for _ in range(5):
+    for _ in range(len(available)):
         question = engine.next_question()
         assert question is not None
+        assert question.kind == "mcq"
         asked.append(question.id)
         engine.submit(question.id, 0)
-    assert len(asked) == len(set(asked))
+    assert len(asked) == len(set(asked)) == len(available)
     assert engine.next_question() is None
 
 

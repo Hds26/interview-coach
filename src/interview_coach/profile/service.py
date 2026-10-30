@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from interview_coach.assessment.targets import resolve_target
+
 LEVELS = ("junior", "mid", "senior")
 DEFAULT_DAILY_MINUTES = 30
 MIN_DAILY_MINUTES = 10
@@ -17,6 +19,7 @@ class ProfileInput:
     target_role: str
     level: str
     daily_minutes: int
+    target_id: str = "generic_tech"
 
 
 def normalize_profile(
@@ -24,6 +27,7 @@ def normalize_profile(
     target_role: str,
     level: str = "mid",
     daily_minutes: int = DEFAULT_DAILY_MINUTES,
+    target: str = "generic_tech",
 ) -> ProfileInput:
     clean_name = name.strip()
     clean_role = target_role.strip()
@@ -39,7 +43,8 @@ def normalize_profile(
         raise ValueError(
             f"daily minutes must be between {MIN_DAILY_MINUTES} and {MAX_DAILY_MINUTES}"
         )
-    return ProfileInput(clean_name, clean_role, level, daily_minutes)
+    target_id = resolve_target(clean_role, target)
+    return ProfileInput(clean_name, clean_role, level, daily_minutes, target_id)
 
 
 def prior_ability(level: str) -> float:

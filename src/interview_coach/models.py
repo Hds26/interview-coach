@@ -6,6 +6,15 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class RubricPoint:
+    """One locally checkable point on an open answer. Keywords are matched offline."""
+
+    label: str
+    keywords: tuple[str, ...]
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
 class Question:
     id: str
     topic: str
@@ -14,6 +23,10 @@ class Question:
     choices: tuple[str, ...]
     answer: int
     explanation: str
+    kind: str = "mcq"
+    tags: tuple[str, ...] = ()
+    discrimination: float = 1.0
+    rubric: tuple[RubricPoint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -24,6 +37,7 @@ class Profile:
     daily_minutes: int
     created_at: str
     updated_at: str
+    target_id: str = "generic_tech"
 
 
 @dataclass(frozen=True)
@@ -32,6 +46,9 @@ class TopicScore:
     ability: float
     answered: int
     correct: int
+    information: float = 0.0
+    credit: float = 0.0
+    next_review: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +59,11 @@ class ScoredAnswer:
     choice_index: int
     correct: bool
     ability_after: float
+    score: float = 1.0
+    kind: str = "mcq"
+    information: float = 0.0
+    response_text: str = ""
+    rubric_hits: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
