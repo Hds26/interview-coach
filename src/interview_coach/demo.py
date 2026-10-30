@@ -7,14 +7,18 @@ from pathlib import Path
 
 from interview_coach.app import CoachApp, overall_mastery
 from interview_coach.assessment.bank import display_topic
-from interview_coach.assessment.scoring import mastery_percent
+from interview_coach.assessment.scoring import confidence_percent, mastery_percent
 from interview_coach.db import Database
 from interview_coach.models import Question
 
 MISS_TOPICS = {"databases", "system_design", "networking"}
 
 
-def scripted_choice(question: Question) -> int:
+def scripted_choice(question: Question) -> int | str:
+    if question.kind == "open":
+        if question.topic in MISS_TOPICS:
+            return "unsure"
+        return " ".join(point.keywords[0] for point in question.rubric if point.keywords)
     if question.topic in MISS_TOPICS:
         return (question.answer + 1) % len(question.choices)
     return question.answer
@@ -43,6 +47,7 @@ def run_demo(db_path: Path, start: date | None = None) -> int:
     print("Profile")
     print(f"  name: {profile.name}")
     print(f"  role: {profile.target_role}")
+    print(f"  target: {profile.target_id}")
     print(f"  level: {profile.level}")
     print(f"  daily_minutes: {profile.daily_minutes}")
     print()
@@ -56,6 +61,7 @@ def run_demo(db_path: Path, start: date | None = None) -> int:
         print(
             f"  {score.topic:16} ability={score.ability:.2f}  "
             f"mastery={mastery_percent(score.ability):3d}%  "
+            f"confidence={confidence_percent(score.information):3d}%  "
             f"correct={score.correct}/{score.answered}"
         )
     print()
