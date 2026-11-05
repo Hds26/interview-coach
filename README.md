@@ -1,8 +1,8 @@
 # Interview Study Coach
 
-离线优先的 Python 面试学习教练。用自适应题目（选择题和开放题）摸清短板，按每天约 30 分钟生成 7 天计划（每天都有可核对的验收标准，开放题走本地 rubric），记录完成情况，再按完成率重排下一周。也可以按间隔把薄弱题提前带回下一周，而不必只靠整周重排。默认不调用任何模型 API。
+离线优先的 Python 面试学习教练。用自适应题目（选择题和开放题）摸清短板，按每天约 30 分钟生成 7 天计划（每天都有可核对的验收标准，开放题走本地 rubric），记录完成情况，再按完成率重排下一周。也可以按间隔把薄弱题提前带回下一周，而不必只靠整周重排。默认不调用任何模型 API。需要 DeepSeek 时，设置 `DEEPSEEK_API_KEY` 后使用 `--llm deepseek`。
 
-Offline-first CLI for interview prep. It estimates what you know with adaptive multiple-choice and open questions, builds a 7-day plan at about 30 minutes a day with measurable acceptance criteria, tracks what you finish, and replans from that completion rate. Due topics can also move to the front of the next week. No API key is required.
+Offline-first CLI for interview prep. It estimates what you know with adaptive multiple-choice and open questions, builds a 7-day plan at about 30 minutes a day with measurable acceptance criteria, tracks what you finish, and replans from that completion rate. Due topics can also move to the front of the next week. No API key is required for the default path. Set `DEEPSEEK_API_KEY` and pass `--llm deepseek` when you want DeepSeek.
 
 ## 安装 / Install
 
@@ -72,6 +72,33 @@ databases,4,0.5
 
 单独一个 JSON 数组也视为练习行。A bare JSON list is treated as practice rows.
 
+## 模型 / LLM
+
+默认 `--llm offline`：回复只来自本地工具，不读取 API key。
+
+The default `--llm offline` answers from local tools and does not read an API key.
+
+DeepSeek 使用官方 OpenAI 兼容接口 `POST https://api.deepseek.com/chat/completions`。当前文档（<https://api-docs.deepseek.com/>）列出的模型是 `deepseek-flash` 和 `deepseek-v4-pro`。`deepseek-chat` 已停用，因此默认模型是 `deepseek-flash`，并关闭 thinking。`ask` 仍走和 offline / OpenAI 相同的本地工具循环：`get_profile`、`get_scores`、`get_plan`、`get_progress`、`get_today`。
+
+DeepSeek calls the official OpenAI-compatible endpoint `POST https://api.deepseek.com/chat/completions`. The current docs list `deepseek-flash` and `deepseek-v4-pro`. `deepseek-chat` is retired, so the default model is `deepseek-flash` with thinking disabled. `ask` keeps the same local tool loop as offline and OpenAI: `get_profile`, `get_scores`, `get_plan`, `get_progress`, and `get_today`.
+
+```bash
+export DEEPSEEK_API_KEY=...
+interview-coach ask "what should I study today" --llm deepseek
+```
+
+可选环境变量：`DEEPSEEK_MODEL`（默认 `deepseek-flash`）、`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`，必须是 https）。
+
+Optional environment variables: `DEEPSEEK_MODEL` (default `deepseek-flash`) and `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`, https required).
+
+没有 `DEEPSEEK_API_KEY` 时，`--llm deepseek` 以退出码 1 结束，并且不会发出请求。密钥只放在环境变量里。可以把 `.env.example` 复制为本地 `.env` 再自己 `export`；程序不会自动加载 `.env`。`.env` 已在 `.gitignore` 中。`.env.example` 只有空的 `DEEPSEEK_API_KEY=`。不要把真实 key 提交到 git，也不要写进 README、issue 或示例命令。
+
+When `DEEPSEEK_API_KEY` is missing, `--llm deepseek` exits with code 1 and sends no request. Keep the key in the environment. You can copy `.env.example` to a local `.env` and export it yourself; the program does not load `.env` automatically. `.env` is listed in `.gitignore`. `.env.example` contains only an empty `DEEPSEEK_API_KEY=`. Never commit a real key, and do not paste one into the README, an issue, or an example command.
+
+`--llm openai` 需要 `OPENAI_API_KEY` 和 `pip install -e ".[llm]"`。DeepSeek 使用标准库发 HTTP，安装 `.[dev]` 即可跑测试和离线命令。
+
+`--llm openai` needs `OPENAI_API_KEY` and `pip install -e ".[llm]"`. DeepSeek sends HTTP with the standard library, so `.[dev]` is enough for tests and the offline commands.
+
 ## 行为 / Behavior
 
 - **Assessment.** 每个主题有 1 到 5 的能力值。答对会升高，下一题更难；答错则相反。开放题用本地 rubric 打 0 到 1 的部分分，同样更新能力值。目标预设会改变抽题比例：权重高的主题被抽到的次数更多。分数存在 SQLite。
@@ -83,7 +110,7 @@ databases,4,0.5
 - **Spaced review.** 练过的主题会得到 `next_review`：能力越低，间隔越短（1、2、4、7 或 14 天）。`due` 列出到期主题。`replan` 在 steady / stretch 时把到期主题排到未完成主题之前，所以薄弱点不用干等整周重排。shrink（完成率低于 60%）仍只盯最弱的三个主题。`drill` 只练习到期主题，不新建一周计划。
 - **Replan.** 完成率是已记录天数里的 `done / (done + missed)`。低于 60% 则收缩（3 个最弱主题、更易的检查、少 5 分钟，最低 10）。至少 85% 完成且测验正确率至少 70% 则加码（更难的检查、多 5 分钟，最高 120）。其余情况保持分钟数，并把未完成主题和到期主题往前排。
 - **Import / export.** JSON 与 CSV 导入练习和日志。Markdown 与 ICS 导出当前周，方便放进日历。核心路径都不需要 API key。
-- **Coach.** `ask` 走一个 agent 循环：系统提示加本地工具（`get_profile`, `get_scores`, `get_plan`, `get_progress`, `get_today`）。默认 `--llm offline` 只用这些工具结果写回复。`--llm openai` 复用同一套工具，需要 `OPENAI_API_KEY` 和 `pip install -e ".[llm]"`。
+- **Coach.** `ask` 走一个 agent 循环：系统提示加本地工具（`get_profile`, `get_scores`, `get_plan`, `get_progress`, `get_today`）。默认 `--llm offline` 只用这些工具结果写回复。`--llm openai` 和 `--llm deepseek` 复用同一套工具。OpenAI 需要 `OPENAI_API_KEY` 和 `pip install -e ".[llm]"`。DeepSeek 需要 `DEEPSEEK_API_KEY`，见上面的「模型 / LLM」。
 
 ## 布局 / Layout
 
@@ -93,7 +120,7 @@ src/interview_coach/
   profile/      name, job title, target preset, daily minutes
   planner/      7-day plan and replan policy
   tracker/      completion, spaced review, JSON/CSV import, Markdown/ICS export
-  agent/        prompts, local tools, offline and OpenAI clients
+  agent/        prompts, local tools, offline, OpenAI, and DeepSeek clients
   cli.py        interview-coach entry point
   demo.py       scripted week
 data/           SQLite databases

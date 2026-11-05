@@ -38,9 +38,9 @@ def _shared_flags() -> argparse.ArgumentParser:
     shared.add_argument("--db", type=Path, default=argparse.SUPPRESS, help="SQLite path (default: data/coach.sqlite)")
     shared.add_argument(
         "--llm",
-        choices=("offline", "openai"),
+        choices=("offline", "openai", "deepseek"),
         default=argparse.SUPPRESS,
-        help="coach model. offline needs no API key (default)",
+        help="coach model. offline needs no API key (default); deepseek reads DEEPSEEK_API_KEY",
     )
     return shared
 

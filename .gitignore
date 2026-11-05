@@ -11,3 +11,8 @@ data/*.sqlite
 data/*.sqlite3
 *.sqlite
 *.sqlite3
+
+# Local secrets. .env.example is the empty template and stays tracked.
+.env
+.env.*
+!.env.example
