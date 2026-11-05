@@ -1,11 +1,15 @@
-"""LLM interface. Offline is the default. OpenAI is optional and never imported unless selected."""
+"""LLM interface. Offline is the default. OpenAI and DeepSeek are selected explicitly."""
 
 from __future__ import annotations
 
 import json
 import os
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
+from urllib.error import HTTPError, URLError
 
 from interview_coach.agent.prompts import SYSTEM_PROMPT, render_tool_reply
 
@@ -129,9 +133,179 @@ class OpenAILLM:
         return LLMResponse(content=message.content or "", tool_calls=calls)
 
 
+# https://api-docs.deepseek.com/ — current ids are deepseek-flash and deepseek-v4-pro.
+# deepseek-chat was retired, so the default is deepseek-flash. Thinking stays off so
+# tool calls stay on the same local loop as the other providers.
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-flash"
+
+
+class DeepSeekLLM:
+    """OpenAI-compatible DeepSeek chat client. The HTTP call uses the standard library."""
+
+    name = "deepseek"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        urlopen: Callable[..., object] | None = None,
+        timeout: float = 60.0,
+    ) -> None:
+        if api_key is None:
+            api_key = os.environ.get("DEEPSEEK_API_KEY")
+        self.api_key = (api_key or "").strip()
+        if model is None:
+            model = os.environ.get("DEEPSEEK_MODEL")
+        self.model = (model or "").strip() or DEEPSEEK_MODEL
+        if base_url is None:
+            base_url = os.environ.get("DEEPSEEK_BASE_URL")
+        self.base_url = _normalize_base_url((base_url or "").strip() or DEEPSEEK_BASE_URL)
+        self._urlopen = urlopen
+        self.timeout = timeout
+
+    def complete(self, messages: list[dict], tools: list[dict] | None = None) -> LLMResponse:
+        if not self.api_key:
+            raise LLMConfigError("DEEPSEEK_API_KEY is required for --llm deepseek")
+        payload: dict = {
+            "model": self.model,
+            "messages": messages,
+            "thinking": {"type": "disabled"},
+            "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+        body = self._post(payload)
+        return _response_from_chat(body)
+
+    def _post(self, payload: dict) -> dict:
+        raw_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=raw_body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+        opener = self._urlopen or urllib.request.urlopen
+        try:
+            with opener(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except HTTPError as exc:
+            detail = _read_error_body(exc)
+            message = f"DeepSeek API returned HTTP {exc.code}: {detail}"
+            raise LLMConfigError(_redact(message, self.api_key)) from exc
+        except URLError as exc:
+            reason = _redact(str(exc.reason), self.api_key)
+            raise LLMConfigError(f"DeepSeek API request failed: {reason}") from exc
+        except TimeoutError as exc:
+            raise LLMConfigError("DeepSeek API request timed out") from exc
+        return _decode_json(raw, self.api_key)
+
+
+def _normalize_base_url(value: str) -> str:
+    base = value.strip().rstrip("/")
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise LLMConfigError("DEEPSEEK_BASE_URL must be an https URL")
+    return base
+
+
+def _redact(text: str, secret: str) -> str:
+    if secret and secret in text:
+        return text.replace(secret, "[redacted]")
+    return text
+
+
+def _read_error_body(exc: HTTPError) -> str:
+    try:
+        raw = exc.read()
+    except Exception:
+        return str(exc.msg or "")
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw)
+    text = " ".join(text.split())
+    if len(text) > 300:
+        return text[:300] + "..."
+    return text
+
+
+def _decode_json(raw: bytes | str, secret: str) -> dict:
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise LLMConfigError("DeepSeek API returned invalid JSON") from exc
+    else:
+        text = raw
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise LLMConfigError("DeepSeek API returned invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise LLMConfigError("DeepSeek API returned an unexpected payload")
+    if "error" in parsed and "choices" not in parsed:
+        message = parsed["error"]
+        if isinstance(message, dict):
+            message = message.get("message") or message
+        raise LLMConfigError(_redact(f"DeepSeek API error: {message}", secret))
+    return parsed
+
+
+def _response_from_chat(payload: dict) -> LLMResponse:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise LLMConfigError("DeepSeek API returned no choices")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise LLMConfigError("DeepSeek API returned no message")
+    content = message.get("content") or ""
+    if not isinstance(content, str):
+        content = ""
+    return LLMResponse(content=content, tool_calls=_tool_calls_from_message(message))
+
+
+def _tool_calls_from_message(message: dict) -> list[ToolCall]:
+    raw_calls = message.get("tool_calls") or []
+    if not isinstance(raw_calls, list):
+        raise LLMConfigError("DeepSeek API returned malformed tool calls")
+    calls: list[ToolCall] = []
+    for index, tool_call in enumerate(raw_calls):
+        if not isinstance(tool_call, dict):
+            raise LLMConfigError("DeepSeek API returned malformed tool calls")
+        function = tool_call.get("function") or {}
+        if not isinstance(function, dict):
+            raise LLMConfigError("DeepSeek API returned malformed tool calls")
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            raise LLMConfigError("DeepSeek API returned a tool call without a name")
+        supplied = function.get("arguments")
+        raw_arguments = supplied if supplied not in (None, "") else "{}"
+        if isinstance(raw_arguments, dict):
+            arguments = raw_arguments
+        else:
+            try:
+                arguments = json.loads(raw_arguments)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise LLMConfigError(f"DeepSeek tool arguments were not valid JSON for {name}") from exc
+        if not isinstance(arguments, dict):
+            raise LLMConfigError(f"DeepSeek tool arguments for {name} must be a JSON object")
+        call_id = tool_call.get("id") or f"call-{index}"
+        calls.append(ToolCall(id=str(call_id), name=name, arguments=arguments))
+    return calls
+
+
 def build_llm(name: str, client: object | None = None) -> LLM:
     if name in {"", "offline", "none"}:
         return OfflineLLM()
     if name == "openai":
         return OpenAILLM(client=client)
-    raise ValueError("llm must be 'offline' or 'openai'")
+    if name == "deepseek":
+        return DeepSeekLLM()
+    raise ValueError("llm must be 'offline', 'openai', or 'deepseek'")

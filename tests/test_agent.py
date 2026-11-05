@@ -29,6 +29,7 @@ def _ready(tmp_path) -> CoachApp:
 
 def test_offline_ask_uses_the_plan_without_an_api_key(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     app = _ready(tmp_path)
     answer = app.agent("offline").ask("What should I study today?")
     assert "Acceptance criteria" in answer
