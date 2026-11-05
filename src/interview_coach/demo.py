@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -24,7 +25,13 @@ def scripted_choice(question: Question) -> int | str:
     return question.answer
 
 
-def run_demo(db_path: Path, start: date | None = None) -> int:
+def run_demo(db_path: Path, start: date | None = None, *, yes: bool = False) -> int:
+    if db_path.exists() and not _confirm_delete(db_path, yes):
+        print(
+            f"error: {db_path} already exists. Re-run with --yes to delete it.",
+            file=sys.stderr,
+        )
+        return 1
     if db_path.exists():
         db_path.unlink()
     app = CoachApp(Database(db_path))
@@ -88,6 +95,15 @@ def run_demo(db_path: Path, start: date | None = None) -> int:
     print("Demo complete")
     app.db.close()
     return 0
+
+
+def _confirm_delete(path: Path, yes: bool) -> bool:
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    answer = input(f"Delete existing database {path}? [y/N] ").strip().lower()
+    return answer in {"y", "yes"}
 
 
 def _print_plan(plan) -> None:

@@ -14,20 +14,43 @@ from interview_coach.assessment.bank import QuestionBank
 from interview_coach.assessment.engine import AdaptiveAssessment
 from interview_coach.assessment.scoring import item_information, mastery_percent, update_ability
 from interview_coach.assessment.targets import topic_weights
+from interview_coach.coach_text import closing_lines, intro_lines, weak_labels
 from interview_coach.db import Database
-from interview_coach.models import AssessmentResult, Profile, Progress, StudyPlan, TopicScore
-from interview_coach.planner.planner import adjusted_minutes, build_week, choose_policy, explain_policy, rank_topics
-from interview_coach.profile.service import normalize_profile, prior_ability
+from interview_coach.models import AssessmentResult, AutoLog, PlanDay, Profile, Progress, StudyPlan, TopicScore
+from interview_coach.planner.acceptance import evaluate, open_item_id
+from interview_coach.planner.planner import (
+    adjusted_minutes,
+    build_week,
+    choose_policy,
+    explain_policy,
+    focus_topics,
+)
+from interview_coach.profile.service import DEFAULT_KINDS, DEFAULT_STREAK_GOAL, normalize_profile, prior_ability
 from interview_coach.tracker.export import export_ics, export_markdown
 from interview_coach.tracker.importer import ImportBatch, load_progress
-from interview_coach.tracker.schedule import next_review_on
+from interview_coach.tracker.schedule import item_next_due, next_review_on
 from interview_coach.tracker.tracker import summarize, unfinished_focuses
+
+
+class NothingDue(RuntimeError):
+    """Drill found no due topics and did not change the schedule."""
 
 
 @dataclass(frozen=True)
 class ImportResult:
     practice_count: int
     log_count: int
+
+
+@dataclass(frozen=True)
+class TodaySetup:
+    day: PlanDay
+    topics: list[str]
+    kinds: list[str]
+    must_ask: tuple[str, ...]
+    created_plan: bool
+    replanned: bool
+    lines: tuple[str, ...]
 
 
 class CoachApp:
@@ -42,8 +65,24 @@ class CoachApp:
         level: str = "mid",
         daily_minutes: int = 30,
         target: str = "generic_tech",
+        streak_goal: int | None = None,
+        preferred_kinds: str | None = None,
+        reset_scores: bool = False,
     ) -> Profile:
-        incoming = normalize_profile(name, target_role, level, daily_minutes, target)
+        existing = self.db.get_profile()
+        if streak_goal is None:
+            streak_goal = existing.streak_goal if existing else DEFAULT_STREAK_GOAL
+        if preferred_kinds is None:
+            preferred_kinds = existing.preferred_kinds if existing else DEFAULT_KINDS
+        incoming = normalize_profile(
+            name,
+            target_role,
+            level,
+            daily_minutes,
+            target,
+            streak_goal=streak_goal,
+            preferred_kinds=preferred_kinds,
+        )
         return self.db.save_profile(
             incoming.name,
             incoming.target_role,
@@ -51,6 +90,9 @@ class CoachApp:
             incoming.daily_minutes,
             prior_ability(incoming.level),
             incoming.target_id,
+            streak_goal=incoming.streak_goal,
+            preferred_kinds=incoming.preferred_kinds,
+            reset_scores=reset_scores,
         )
 
     def require_profile(self) -> Profile:
@@ -68,11 +110,13 @@ class CoachApp:
         tags: list[str] | None = None,
         on: date | None = None,
         on_scored: Callable | None = None,
+        must_ask: list[str] | tuple[str, ...] | None = None,
     ) -> AssessmentResult:
         profile = self.require_profile()
         selected = list(topics) if topics else list(self.bank.topics())
         if question_count < 1:
             raise ValueError("question count must be at least 1")
+        today = on or date.today()
         engine = AdaptiveAssessment(
             self.bank,
             selected,
@@ -80,9 +124,12 @@ class CoachApp:
             weights=topic_weights(profile.target_id),
             kinds=kinds,
             tags=tags,
+            exposed=self.db.exposure_map(),
+            today=today,
+            must_ask=must_ask,
         )
-        for _ in range(question_count):
-            question = engine.next_question()
+        for index in range(question_count):
+            question = engine.next_question(reserve=question_count - index - 1)
             if question is None:
                 break
             choice = choose(question)
@@ -112,9 +159,20 @@ class CoachApp:
             for topic, ability in engine.ability.items()
             if any(answer.topic == topic for answer in engine.answers)
         }
-        assessment_id = self.db.save_assessment(payload, engine.ability, reviews)
+        exposures = [
+            {
+                "question_id": answer.question_id,
+                "topic": answer.topic,
+                "last_seen": today.isoformat(),
+                "last_score": answer.score,
+                "next_due": item_next_due(answer.score, answer.ability_after, today),
+            }
+            for answer in engine.answers
+        ]
+        assessment_id = self.db.save_assessment(payload, engine.ability, reviews, exposures)
         scores = tuple(self.db.list_scores())
-        return AssessmentResult(assessment_id, tuple(engine.answers), scores)
+        autolog = self._autolog(tuple(engine.answers))
+        return AssessmentResult(assessment_id, tuple(engine.answers), scores, autolog)
 
     def drill(
         self,
@@ -134,10 +192,9 @@ class CoachApp:
         self.require_profile()
         due_on = on or date.today()
         due = self.db.due_topics(due_on.isoformat())
-        if due:
-            topics = due
-        else:
-            topics = rank_topics(self.db.list_scores(), self._weights())[:3]
+        if not due:
+            raise NothingDue("No topics are due. The schedule was left unchanged.")
+        topics = due
         return self.assess(
             question_count,
             topics,
@@ -258,9 +315,78 @@ class CoachApp:
             )
         return ImportResult(len(batch.practice), len(batch.logs))
 
-    def agent(self, llm_name: str = "offline", client: object | None = None) -> CoachAgent:
-        llm: LLM = build_llm(llm_name, client=client)
+    def prepare_today(self, on: date | None = None, lang: str = "zh") -> TodaySetup:
+        """Make sure a week exists and describe the next pending day. Does not ask questions."""
+        profile = self.require_profile()
+        today = on or date.today()
+        created = False
+        replanned = False
+        plan = self.db.get_active_plan()
+        if plan is None:
+            plan = self.create_plan(start=today)
+            created = True
+        if not any(day.status == "pending" for day in plan.days):
+            plan, _reason = self.replan(start=today)
+            replanned = True
+        day = next((item for item in plan.days if item.status == "pending"), None)
+        if day is None:
+            raise RuntimeError("the active plan has no pending day")
+        topics = focus_topics(day.focus)
+        kinds = _session_kinds(profile.preferred_kinds, day.acceptance_criteria)
+        question_id = open_item_id(day.acceptance_criteria)
+        must_ask = (question_id,) if question_id else ()
+        lines = intro_lines(day, lang, created_plan=created, replanned=replanned)
+        return TodaySetup(day, topics, kinds, must_ask, created, replanned, tuple(lines))
+
+    def closing_lines(self, result: AssessmentResult, lang: str = "zh") -> list[str]:
+        plan = self.db.get_active_plan()
+        profile = self.db.get_profile()
+        autolog = result.autolog
+        logged = bool(autolog and autolog.logged)
+        day_index = autolog.day_index if autolog else None
+        focus = autolog.focus if autolog else ""
+        missing = autolog.missing if autolog else ()
+        next_day = None
+        days_done = 0
+        if plan is not None:
+            days_done = sum(1 for day in plan.days if day.status == "done")
+            next_day = next((day for day in plan.days if day.status == "pending"), None)
+        weak = weak_labels(self.db.list_scores(), lang)
+        streak = profile.streak_goal if profile else 5
+        return closing_lines(
+            lang=lang,
+            logged=logged,
+            day_index=day_index,
+            focus=focus,
+            missing=missing,
+            next_day=next_day,
+            days_done=days_done,
+            streak_goal=streak,
+            weak=weak,
+        )
+
+    def agent(self, llm_name: str = "offline", client: object | None = None, lang: str = "zh") -> CoachAgent:
+        llm: LLM = build_llm(llm_name, client=client, lang=lang)
         return CoachAgent(llm, build_registry(self))
+
+    def _autolog(self, answers: tuple) -> AutoLog | None:
+        plan = self.db.get_active_plan()
+        if plan is None or not answers:
+            return None
+        pending = [day for day in plan.days if day.status == "pending"]
+        if not pending:
+            return None
+        day = pending[0]
+        topics = set(focus_topics(day.focus))
+        if topics.isdisjoint({answer.topic for answer in answers}):
+            return None
+        verdict = evaluate(day.acceptance_criteria, answers, topics)
+        if not verdict.met:
+            return AutoLog(False, day.day_index, day.focus, verdict.missing)
+        relevant = [answer for answer in answers if answer.topic in topics]
+        correct = sum(1 for answer in relevant if answer.correct)
+        self.log_day(day.day_index, day.minutes, True, correct, len(relevant), notes="auto")
+        return AutoLog(True, day.day_index, day.focus, ())
 
     def _store_plan(self, minutes: int, policy: str, start: date, drafts: list) -> StudyPlan:
         days = []
@@ -279,6 +405,15 @@ class CoachApp:
 
     def _weights(self) -> dict[str, float]:
         return topic_weights(self.require_profile().target_id)
+
+
+def _session_kinds(preferred: str, criteria: tuple[str, ...] | list[str]) -> list[str]:
+    kinds = [part.strip() for part in preferred.split(",") if part.strip()]
+    if open_item_id(criteria) and "open" not in kinds:
+        kinds.append("open")
+    if "mcq" not in kinds:
+        kinds.append("mcq")
+    return kinds or ["mcq", "open"]
 
 
 def _merge(*groups: list[str]) -> list[str]:

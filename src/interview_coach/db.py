@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS profile (
     daily_minutes INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    target_id TEXT NOT NULL DEFAULT 'generic_tech'
+    target_id TEXT NOT NULL DEFAULT 'generic_tech',
+    streak_goal INTEGER NOT NULL DEFAULT 5,
+    preferred_kinds TEXT NOT NULL DEFAULT 'mcq,open'
 );
 
 CREATE TABLE IF NOT EXISTS topic_score (
@@ -88,6 +90,15 @@ CREATE TABLE IF NOT EXISTS study_log (
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS item_exposure (
+    question_id TEXT PRIMARY KEY,
+    topic TEXT NOT NULL,
+    seen_count INTEGER NOT NULL,
+    last_seen TEXT NOT NULL,
+    last_score REAL NOT NULL,
+    next_due TEXT NOT NULL
+);
 """
 
 
@@ -104,6 +115,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_column(conn, "response", "score", "REAL NOT NULL DEFAULT 1")
     _add_column(conn, "response", "kind", "TEXT NOT NULL DEFAULT 'mcq'")
     _add_column(conn, "response", "response_text", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "profile", "streak_goal", "INTEGER NOT NULL DEFAULT 5")
+    _add_column(conn, "profile", "preferred_kinds", "TEXT NOT NULL DEFAULT 'mcq,open'")
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
@@ -139,6 +152,8 @@ class Database:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             target_id=row["target_id"],
+            streak_goal=row["streak_goal"],
+            preferred_kinds=row["preferred_kinds"],
         )
 
     def save_profile(
@@ -149,7 +164,11 @@ class Database:
         daily_minutes: int,
         prior: float,
         target_id: str = "generic_tech",
+        streak_goal: int = 5,
+        preferred_kinds: str = "mcq,open",
+        reset_scores: bool = False,
     ) -> Profile:
+        """Update the learner. Existing ability rows and plans stay unless ``reset_scores``."""
         now = utc_now()
         existing = self.get_profile()
         created = existing.created_at if existing else now
@@ -157,31 +176,42 @@ class Database:
             self.conn.execute(
                 """
                 INSERT INTO profile (
-                    id, name, target_role, level, daily_minutes, created_at, updated_at, target_id
+                    id, name, target_role, level, daily_minutes, created_at, updated_at,
+                    target_id, streak_goal, preferred_kinds
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     target_role = excluded.target_role,
                     level = excluded.level,
                     daily_minutes = excluded.daily_minutes,
                     updated_at = excluded.updated_at,
-                    target_id = excluded.target_id
+                    target_id = excluded.target_id,
+                    streak_goal = excluded.streak_goal,
+                    preferred_kinds = excluded.preferred_kinds
                 """,
-                (name, target_role, level, daily_minutes, created, now, target_id),
+                (name, target_role, level, daily_minutes, created, now, target_id, streak_goal, preferred_kinds),
             )
-            self.conn.execute("DELETE FROM topic_score")
-            for topic in TOPICS:
-                self.conn.execute(
-                    """
-                    INSERT INTO topic_score (topic, ability, answered, correct, updated_at)
-                    VALUES (?, ?, 0, 0, ?)
-                    """,
-                    (topic, prior, now),
-                )
+            if reset_scores:
+                self.conn.execute("DELETE FROM topic_score")
+                self.conn.execute("DELETE FROM item_exposure")
+            self._ensure_score_rows(prior, now)
         profile = self.get_profile()
         assert profile is not None
         return profile
+
+    def _ensure_score_rows(self, prior: float, now: str) -> None:
+        have = {row["topic"] for row in self.conn.execute("SELECT topic FROM topic_score")}
+        for topic in TOPICS:
+            if topic in have:
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO topic_score (topic, ability, answered, correct, updated_at)
+                VALUES (?, ?, 0, 0, ?)
+                """,
+                (topic, prior, now),
+            )
 
     def list_scores(self) -> list[TopicScore]:
         rows = self.conn.execute(
@@ -212,6 +242,7 @@ class Database:
         answers: list[dict],
         final_ability: dict[str, float],
         next_review: dict[str, str] | None = None,
+        exposures: list[dict] | None = None,
     ) -> int:
         now = utc_now()
         with self.conn:
@@ -266,7 +297,40 @@ class Database:
                     """,
                     (ability, len(batch), correct, credit, information, review, now, topic),
                 )
+            for item in exposures or []:
+                self._upsert_exposure(item)
         return assessment_id
+
+    def _upsert_exposure(self, item: dict) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO item_exposure (question_id, topic, seen_count, last_seen, last_score, next_due)
+            VALUES (?, ?, 1, ?, ?, ?)
+            ON CONFLICT(question_id) DO UPDATE SET
+                topic = excluded.topic,
+                seen_count = item_exposure.seen_count + 1,
+                last_seen = excluded.last_seen,
+                last_score = excluded.last_score,
+                next_due = excluded.next_due
+            """,
+            (
+                item["question_id"],
+                item["topic"],
+                item["last_seen"],
+                item["last_score"],
+                item["next_due"],
+            ),
+        )
+
+    def exposure_map(self) -> dict[str, str]:
+        rows = self.conn.execute("SELECT question_id, next_due FROM item_exposure").fetchall()
+        return {row["question_id"]: row["next_due"] for row in rows}
+
+    def exposure_row(self, question_id: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM item_exposure WHERE question_id = ?",
+            (question_id,),
+        ).fetchone()
 
     def apply_practice(
         self,

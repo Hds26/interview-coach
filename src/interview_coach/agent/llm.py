@@ -61,13 +61,16 @@ class OfflineLLM:
 
     name = "offline"
 
+    def __init__(self, lang: str = "zh") -> None:
+        self.lang = lang if lang in {"zh", "en"} else "zh"
+
     def complete(self, messages: list[dict], tools: list[dict] | None = None) -> LLMResponse:
         del tools
         results = _tool_results(messages)
         if results:
             last = results[-1]
             payload = json.loads(last["content"])
-            return LLMResponse(content=render_tool_reply(str(last["name"]), payload))
+            return LLMResponse(content=render_tool_reply(str(last["name"]), payload, self.lang))
         return LLMResponse(
             content="",
             tool_calls=[ToolCall(id="local-1", name=_intent(messages), arguments={})],
@@ -301,9 +304,9 @@ def _tool_calls_from_message(message: dict) -> list[ToolCall]:
     return calls
 
 
-def build_llm(name: str, client: object | None = None) -> LLM:
+def build_llm(name: str, client: object | None = None, lang: str = "zh") -> LLM:
     if name in {"", "offline", "none"}:
-        return OfflineLLM()
+        return OfflineLLM(lang=lang)
     if name == "openai":
         return OpenAILLM(client=client)
     if name == "deepseek":
