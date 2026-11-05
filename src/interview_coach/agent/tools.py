@@ -6,7 +6,8 @@ import json
 from typing import Callable
 
 from interview_coach.assessment.bank import display_topic
-from interview_coach.assessment.scoring import mastery_percent
+from interview_coach.assessment.scoring import confidence_percent, mastery_percent
+from interview_coach.assessment.targets import target_label
 
 ToolHandler = Callable[[dict], dict]
 
@@ -66,6 +67,8 @@ def build_registry(app: object) -> ToolRegistry:
         return {
             "name": profile.name,
             "target_role": profile.target_role,
+            "target_id": profile.target_id,
+            "target_label": target_label(profile.target_id),
             "level": profile.level,
             "daily_minutes": profile.daily_minutes,
         }
@@ -81,8 +84,11 @@ def build_registry(app: object) -> ToolRegistry:
                 "label": display_topic(score.topic),
                 "ability": round(score.ability, 2),
                 "mastery": f"{mastery_percent(score.ability)}%",
+                "confidence": f"{confidence_percent(score.information)}%",
                 "answered": score.answered,
                 "correct": score.correct,
+                "credit": round(score.credit, 2),
+                "next_review": score.next_review,
             }
             for score in scores
         ]

@@ -37,6 +37,7 @@ def test_week_has_seven_measurable_days_at_the_daily_budget():
         assert day.acceptance_criteria
         for criterion in day.acceptance_criteria:
             assert any(char.isdigit() for char in criterion)
+    assert any("db-open" in criterion and "rubric" in criterion for criterion in days[0].acceptance_criteria)
 
 
 def test_stronger_topics_are_not_scheduled_before_weaker_ones():

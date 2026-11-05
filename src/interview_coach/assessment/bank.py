@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from interview_coach.assessment.open_items import OPEN_QUESTIONS
+from interview_coach.assessment.scoring import default_discrimination
 from interview_coach.models import Question
 
 TOPICS: dict[str, str] = {
@@ -525,15 +529,183 @@ QUESTIONS: tuple[Question, ...] = (
         0,
         "Data races are unsynchronized conflicting accesses. Deadlock is a different failure.",
     ),
+    _q(
+        "ah-6",
+        "arrays_hashing",
+        3,
+        "A prefix-sum array lets a range sum be answered in:",
+        ("O(1) after O(n) preparation", "O(n) with no preparation", "O(log n) comparisons only", "O(n^2) always"),
+        0,
+        "prefix[r] - prefix[l-1] is the range sum after one linear pass.",
+    ),
+    _q(
+        "tg-6",
+        "trees_graphs",
+        3,
+        "A heap (priority queue) is the usual frontier for:",
+        ("Dijkstra and best-first search", "Printing an array", "Balanced parentheses only", "DNS lookups"),
+        0,
+        "The heap repeatedly extracts the current best distance or score.",
+    ),
+    _q(
+        "cx-6",
+        "complexity",
+        3,
+        "A comparison sort cannot beat which worst-case bound in the general case?",
+        ("O(n log n)", "O(n)", "O(log n)", "O(1)"),
+        0,
+        "There are n! possible orders, so a comparison tree needs Omega(n log n) comparisons.",
+    ),
+    _q(
+        "db-6",
+        "databases",
+        3,
+        "An index can make a write slower because the engine must:",
+        (
+            "Update the index as well as the row",
+            "Drop the table",
+            "Lock the whole cluster for every insert",
+            "Disable the query planner",
+        ),
+        0,
+        "Each secondary index is extra work on insert, update, and delete.",
+    ),
+    _q(
+        "net-6",
+        "networking",
+        3,
+        "A CDN mostly helps by:",
+        (
+            "Serving cached bytes from a nearby edge",
+            "Replacing the origin database",
+            "Terminating employee SSH",
+            "Sorting query results",
+        ),
+        0,
+        "Edge caches cut latency and origin load for cacheable responses.",
+    ),
+    _q(
+        "py-6",
+        "python",
+        3,
+        "A generator expression differs from a list comprehension because it:",
+        (
+            "Yields values lazily",
+            "Can only yield strings",
+            "Always sorts the output",
+            "Disables exceptions",
+        ),
+        0,
+        "A generator produces the next item on demand instead of building the full list.",
+    ),
+    _q(
+        "sd-6",
+        "system_design",
+        3,
+        "A load balancer's basic job is to:",
+        (
+            "Spread requests across healthy instances",
+            "Store the source of truth",
+            "Replace application logs",
+            "Encrypt passwords at rest",
+        ),
+        0,
+        "It forwards traffic and stops sending work to instances that fail health checks.",
+    ),
+    _q(
+        "cc-6",
+        "concurrency",
+        3,
+        "A deadlock is broken by removing one of the Coffman conditions, for example by:",
+        (
+            "Acquiring locks in a fixed global order",
+            "Adding more threads",
+            "Ignoring the race",
+            "Disabling the scheduler",
+        ),
+        0,
+        "A global lock order removes circular wait.",
+    ),
 )
 
 
+# Tags stay beside the items so the original prompts do not have to be rewritten.
+TAGS: dict[str, tuple[str, ...]] = {
+    "ah-1": ("hashing", "lookup"),
+    "ah-2": ("hashing", "two-sum"),
+    "ah-3": ("hashing", "collisions"),
+    "ah-4": ("hashing", "collisions"),
+    "ah-5": ("arrays", "amortized"),
+    "ah-6": ("arrays", "prefix-sum"),
+    "tg-1": ("trees", "bst"),
+    "tg-2": ("graphs", "bfs"),
+    "tg-3": ("graphs", "cycles"),
+    "tg-4": ("graphs", "shortest-path"),
+    "tg-5": ("graphs", "union-find"),
+    "tg-6": ("graphs", "shortest-path"),
+    "cx-1": ("search", "logarithms"),
+    "cx-2": ("loops", "quadratic"),
+    "cx-3": ("sorting", "mergesort"),
+    "cx-4": ("recurrences", "master-theorem"),
+    "cx-5": ("amortized", "arrays"),
+    "cx-6": ("sorting", "lower-bound"),
+    "db-1": ("sql", "keys"),
+    "db-2": ("indexes", "b-tree"),
+    "db-3": ("transactions", "isolation"),
+    "db-4": ("indexes", "covering"),
+    "db-5": ("transactions", "mvcc"),
+    "db-6": ("indexes", "writes"),
+    "net-1": ("dns",),
+    "net-2": ("http", "layers"),
+    "net-3": ("tcp",),
+    "net-4": ("tls", "security"),
+    "net-5": ("http", "quic"),
+    "net-6": ("http", "caching"),
+    "py-1": ("collections", "mutability"),
+    "py-2": ("gil", "concurrency"),
+    "py-3": ("identity", "equality"),
+    "py-4": ("collections", "hashing"),
+    "py-5": ("functions", "mutability"),
+    "py-6": ("generators", "collections"),
+    "sd-1": ("scaling",),
+    "sd-2": ("caching",),
+    "sd-3": ("hashing", "distributed"),
+    "sd-4": ("reliability", "idempotency"),
+    "sd-5": ("cap", "consistency"),
+    "sd-6": ("scaling", "load-balancing"),
+    "cc-1": ("races",),
+    "cc-2": ("locks",),
+    "cc-3": ("deadlock", "locks"),
+    "cc-4": ("semaphores", "locks"),
+    "cc-5": ("memory", "races"),
+    "cc-6": ("deadlock", "locks"),
+}
+
+
+def _decorate(question: Question) -> Question:
+    tags = question.tags or TAGS.get(question.id, ())
+    return replace(
+        question,
+        tags=tuple(tags),
+        discrimination=default_discrimination(question.difficulty),
+    )
+
+
+def default_questions() -> tuple[Question, ...]:
+    return tuple(_decorate(question) for question in QUESTIONS + OPEN_QUESTIONS)
+
+
 class QuestionBank:
-    def __init__(self, questions: tuple[Question, ...] | list[Question] = QUESTIONS) -> None:
-        self._questions = tuple(questions)
+    def __init__(self, questions: tuple[Question, ...] | list[Question] | None = None) -> None:
+        source = default_questions() if questions is None else tuple(_decorate(question) for question in questions)
+        self._questions = source
         self._by_id = {question.id: question for question in self._questions}
         if len(self._by_id) != len(self._questions):
             raise ValueError("duplicate question ids")
+
+    @property
+    def questions(self) -> tuple[Question, ...]:
+        return self._questions
 
     def get(self, question_id: str) -> Question:
         try:
@@ -546,3 +718,7 @@ class QuestionBank:
 
     def topics(self) -> tuple[str, ...]:
         return tuple(TOPICS)
+
+    def tags_for(self, topic: str) -> tuple[str, ...]:
+        found = {tag for question in self.for_topic(topic) for tag in question.tags}
+        return tuple(sorted(found))

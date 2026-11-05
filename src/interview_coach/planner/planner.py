@@ -9,6 +9,7 @@ Policies:
 from __future__ import annotations
 
 from interview_coach.assessment.bank import subject_label
+from interview_coach.assessment.open_items import open_question_for
 from interview_coach.models import DayDraft, TopicScore
 
 SHRINK_BELOW = 0.60
@@ -53,10 +54,19 @@ def explain_policy(policy: str, completion_rate: float, accuracy: float) -> str:
     )
 
 
-def rank_topics(scores: list[TopicScore] | tuple[TopicScore, ...]) -> list[str]:
+def rank_topics(
+    scores: list[TopicScore] | tuple[TopicScore, ...],
+    weights: dict[str, float] | None = None,
+) -> list[str]:
     if not scores:
         raise ValueError("at least one topic score is required")
-    return [score.topic for score in sorted(scores, key=lambda item: (item.ability, item.topic))]
+    table = weights or {}
+
+    def sort_key(item: TopicScore) -> tuple[float, str]:
+        weight = table.get(item.topic, 1.0) or 1.0
+        return (item.ability / weight, item.topic)
+
+    return [score.topic for score in sorted(scores, key=sort_key)]
 
 
 def build_week(
@@ -64,8 +74,9 @@ def build_week(
     daily_minutes: int,
     policy: str = "steady",
     carry: list[str] | tuple[str, ...] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> list[DayDraft]:
-    ranked = rank_topics(scores)
+    ranked = rank_topics(scores, weights)
     abilities = {score.topic: score.ability for score in scores}
     intensity = {"shrink": "foundation", "stretch": "stretch"}.get(policy, "steady")
     if policy == "shrink":
@@ -145,6 +156,7 @@ def _day(
             f"Spend {minutes} minutes on mixed review ({label}).",
             f"Score at least {need}/{out_of} on a mixed {level} quiz covering these topics.",
             "Write 1 correction sentence for each missed item.",
+            _rubric_criterion(focus),
         )
     elif kind == "mock":
         objective = f"Timed mock on {label}, then score it with the rubric."
@@ -152,6 +164,7 @@ def _day(
             f"Complete a {minutes}-minute closed-book mock on {label}.",
             "Answer 5 prompts. Rubric: correctness, clarity, and tradeoffs, each 0-2. Total at least 8/10.",
             "Write 3 gaps to carry into the next plan.",
+            _rubric_criterion(focus),
         )
     else:
         objective = f"Close gaps in {label} with one focused block and a scored check."
@@ -160,5 +173,27 @@ def _day(
             f"Spend {minutes} focused minutes on {label} in a single sitting.",
             f"Score at least {need}/{out_of} on {article} {level} {label} check.",
             f"Write 3 accurate definitions and 1 worked example for {label}.",
+            _rubric_criterion(focus),
         )
     return DayDraft(day_index, focus, minutes, objective, criteria)
+
+
+def _focus_topics(focus: str) -> list[str]:
+    if focus.startswith(("review:", "mock:")):
+        _, _, rest = focus.partition(":")
+        return [part for part in rest.split("+") if part]
+    return [focus]
+
+
+def _rubric_criterion(focus: str) -> str:
+    primary = _focus_topics(focus)[0]
+    question = open_question_for(primary)
+    label = subject_label(primary)
+    if question is None:
+        return f"Write 1 open answer on {label} and score at least 2/3 on the local rubric."
+    total = len(question.rubric)
+    need = max(1, total - 1) if total > 1 else 1
+    return (
+        f"Open item {question.id}: answer in your own words and hit at least {need}/{total} "
+        f"local rubric points (interview-coach assess --topics {primary} --kinds open --questions 1)."
+    )
