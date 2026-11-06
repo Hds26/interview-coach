@@ -71,6 +71,8 @@ def build_registry(app: object) -> ToolRegistry:
             "target_label": target_label(profile.target_id),
             "level": profile.level,
             "daily_minutes": profile.daily_minutes,
+            "streak_goal": profile.streak_goal,
+            "preferred_kinds": profile.preferred_kinds,
         }
 
     def get_scores(_: dict) -> dict:
@@ -92,19 +94,27 @@ def build_registry(app: object) -> ToolRegistry:
             }
             for score in scores
         ]
-        weakest = [item["label"] for item in rendered[:3]]
-        return {"scores": rendered, "weakest": weakest}
+        weakest = [
+            {"topic": item["topic"], "label": item["label"]}
+            for item in rendered[:3]
+        ]
+        profile = app.db.get_profile()  # type: ignore[attr-defined]
+        return {
+            "scores": rendered,
+            "weakest": weakest,
+            "daily_minutes": profile.daily_minutes,
+        }
 
     def get_plan(_: dict) -> dict:
         plan = app.db.get_active_plan()  # type: ignore[attr-defined]
         if plan is None:
-            return {"error": "No active plan yet. Run interview-coach plan."}
+            return {"error": "No active plan yet."}
         return _plan_payload(plan)
 
     def get_progress(_: dict) -> dict:
         plan = app.db.get_active_plan()  # type: ignore[attr-defined]
         if plan is None:
-            return {"error": "No active plan yet. Run interview-coach plan."}
+            return {"error": "No active plan yet."}
         progress = app.progress()  # type: ignore[attr-defined]
         return {
             "version": progress.version,
@@ -119,9 +129,11 @@ def build_registry(app: object) -> ToolRegistry:
     def get_today(_: dict) -> dict:
         plan = app.db.get_active_plan()  # type: ignore[attr-defined]
         if plan is None:
-            return {"error": "No active plan yet. Run interview-coach plan."}
+            return {"error": "No active plan yet."}
         pending = [day for day in plan.days if day.status == "pending"]
         day = pending[0] if pending else plan.days[0]
+        scores = sorted(app.db.list_scores(), key=lambda item: (item.ability, item.topic))  # type: ignore[attr-defined]
+        weakest = [{"topic": score.topic, "label": display_topic(score.topic)} for score in scores[:3]]
         return {
             "day_index": day.day_index,
             "date": day.day_date,
@@ -131,6 +143,7 @@ def build_registry(app: object) -> ToolRegistry:
             "objective": day.objective,
             "acceptance_criteria": list(day.acceptance_criteria),
             "status": day.status,
+            "weakest": weakest,
         }
 
     return ToolRegistry(

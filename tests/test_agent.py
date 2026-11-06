@@ -32,9 +32,9 @@ def test_offline_ask_uses_the_plan_without_an_api_key(tmp_path, monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     app = _ready(tmp_path)
     answer = app.agent("offline").ask("What should I study today?")
-    assert "Acceptance criteria" in answer
-    assert "30 minutes" in answer
-    assert "Day" in answer or "day" in answer
+    assert "接下来" in answer
+    assert "30" in answer
+    assert "做到这几件就算完成" in answer
 
 
 def test_agent_sends_the_system_prompt_and_tool_specs(tmp_path):
@@ -51,9 +51,10 @@ def test_agent_sends_the_system_prompt_and_tool_specs(tmp_path):
 def test_offline_routes_progress_and_scores(tmp_path):
     app = _ready(tmp_path)
     progress = app.agent("offline").ask("show my progress")
-    assert "Plan v1" in progress
+    assert "计划 v1" in progress
     scores = app.agent("offline").ask("what are my weak scores?")
-    assert "Topic scores" in scores
+    assert "目前较薄弱" in scores
+    assert "ability" not in scores.lower()
 
 
 def test_openai_requires_a_key(monkeypatch):

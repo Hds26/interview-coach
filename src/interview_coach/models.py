@@ -38,6 +38,8 @@ class Profile:
     created_at: str
     updated_at: str
     target_id: str = "generic_tech"
+    streak_goal: int = 5
+    preferred_kinds: str = "mcq,open"
 
 
 @dataclass(frozen=True)
@@ -67,10 +69,19 @@ class ScoredAnswer:
 
 
 @dataclass(frozen=True)
+class AutoLog:
+    logged: bool
+    day_index: int | None = None
+    focus: str = ""
+    missing: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class AssessmentResult:
     assessment_id: int
     answers: tuple[ScoredAnswer, ...]
     scores: tuple[TopicScore, ...]
+    autolog: AutoLog | None = None
 
     @property
     def correct_count(self) -> int:

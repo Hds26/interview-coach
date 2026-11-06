@@ -222,7 +222,8 @@ def test_offline_ask_ignores_a_deepseek_key(tmp_path, monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", boom)
     answer = _ready(tmp_path).agent("offline").ask("What should I study today?")
-    assert "Acceptance criteria" in answer
+    assert "接下来" in answer
+    assert "做到这几件就算完成" in answer
 
 
 def test_cli_deepseek_missing_key_exits_1(tmp_path, monkeypatch, capsys):

@@ -23,3 +23,16 @@ def review_interval_days(ability: float) -> int:
 
 def next_review_on(ability: float, today: date) -> str:
     return (today + timedelta(days=review_interval_days(ability))).isoformat()
+
+
+def item_review_days(score: float, ability: float) -> int:
+    """When a seen item may return. Misses come back sooner than clean answers."""
+    if score < 0.5:
+        return 1
+    if score < 0.999:
+        return 2
+    return review_interval_days(ability)
+
+
+def item_next_due(score: float, ability: float, today: date) -> str:
+    return (today + timedelta(days=item_review_days(score, ability))).isoformat()

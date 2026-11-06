@@ -178,11 +178,15 @@ def _day(
     return DayDraft(day_index, focus, minutes, objective, criteria)
 
 
-def _focus_topics(focus: str) -> list[str]:
+def focus_topics(focus: str) -> list[str]:
     if focus.startswith(("review:", "mock:")):
         _, _, rest = focus.partition(":")
         return [part for part in rest.split("+") if part]
     return [focus]
+
+
+def _focus_topics(focus: str) -> list[str]:
+    return focus_topics(focus)
 
 
 def _rubric_criterion(focus: str) -> str:

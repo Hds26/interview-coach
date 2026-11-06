@@ -8,10 +8,11 @@ from datetime import date
 from pathlib import Path
 
 from interview_coach import __version__
-from interview_coach.app import CoachApp, overall_mastery
+from interview_coach.app import CoachApp, NothingDue, overall_mastery
 from interview_coach.assessment.bank import TOPICS, QuestionBank, display_topic
 from interview_coach.assessment.scoring import confidence_percent, mastery_percent
 from interview_coach.assessment.targets import TARGETS, target_label, weight_summary
+from interview_coach.coach_text import no_profile_text, normalize_lang
 from interview_coach.db import Database
 from interview_coach.demo import run_demo
 from interview_coach.paths import default_db_path
@@ -25,6 +26,12 @@ def main(argv: list[str] | None = None) -> int:
         args.db = None
     if not hasattr(args, "llm"):
         args.llm = "offline"
+    if getattr(args, "command", None) is None:
+        args.command = "today"
+        args.questions = 5
+        args.answers = ""
+        args.on = ""
+        args.handler = cmd_today
     try:
         return args.handler(args)
     except (LookupError, ValueError, RuntimeError, KeyError) as exc:
@@ -42,6 +49,12 @@ def _shared_flags() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="coach model. offline needs no API key (default); deepseek reads DEEPSEEK_API_KEY",
     )
+    shared.add_argument(
+        "--lang",
+        choices=("zh", "en"),
+        default=argparse.SUPPRESS,
+        help="coach language. today and ask default to zh",
+    )
     return shared
 
 
@@ -49,13 +62,17 @@ def build_parser() -> argparse.ArgumentParser:
     shared = _shared_flags()
     parser = argparse.ArgumentParser(
         prog="interview-coach",
-        description="Offline interview study coach: assess, plan 7 days, track, and replan.",
+        description="Offline interview coach. Run interview-coach today for one daily session.",
         parents=[shared],
     )
     parser.add_argument("--version", action="version", version=f"interview-coach {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=False)
+
+    _today_parser(sub, "today", "do today's practice, then log it when the checks pass")
+    _today_parser(sub, "go", "same as today")
 
     demo = sub.add_parser("demo", parents=[shared], help="run a scripted week and print the report")
+    demo.add_argument("--yes", action="store_true", help="delete an existing database without asking")
     demo.set_defaults(handler=cmd_demo)
 
     profile = sub.add_parser("profile", parents=[shared], help="create or show the learner profile")
@@ -70,6 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="generic_tech",
         help="skill-weight preset (generic_tech, backend_engineer, python_exam, ...) or auto",
     )
+    init.add_argument("--streak-goal", type=int, default=None, help="optional streak target, 0-30 (default 5)")
+    init.add_argument("--kinds", default=None, help="preferred items: mcq, open, or mcq,open")
+    init.add_argument("--reset", action="store_true", help="reset ability scores; the plan stays")
     init.set_defaults(handler=cmd_profile_init)
     show = profile_sub.add_parser("show", parents=[shared], help="print the profile")
     show.set_defaults(handler=cmd_profile_show)
@@ -139,13 +159,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _today_parser(sub: argparse._SubParsersAction, name: str, help_text: str) -> argparse.ArgumentParser:
+    command = sub.add_parser(name, parents=[_shared_flags()], help=help_text)
+    command.add_argument("--questions", type=int, default=5, help="items in today's session (default 5)")
+    command.add_argument("--answers", default="", help="scripted answers, same form as assess")
+    command.add_argument("--on", default="", help="YYYY-MM-DD (default: today)")
+    command.set_defaults(handler=cmd_today)
+    return command
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     path = args.db or (Path.cwd() / "data" / "demo.sqlite")
-    return run_demo(path)
+    return run_demo(path, yes=bool(getattr(args, "yes", False)))
 
 
 def cmd_profile_init(args: argparse.Namespace) -> int:
-    profile = _app(args).init_profile(args.name, args.role, args.level, args.daily_minutes, args.target)
+    profile = _app(args).init_profile(
+        args.name,
+        args.role,
+        args.level,
+        args.daily_minutes,
+        args.target,
+        streak_goal=args.streak_goal,
+        preferred_kinds=args.kinds,
+        reset_scores=args.reset,
+    )
     print(
         f"Saved {profile.name} ({profile.target_role}, {profile.level}), "
         f"{profile.daily_minutes} min/day, target {profile.target_id}."
@@ -161,6 +199,8 @@ def cmd_profile_show(args: argparse.Namespace) -> int:
     print(f"weights: {weight_summary(profile.target_id)}")
     print(f"level: {profile.level}")
     print(f"daily_minutes: {profile.daily_minutes}")
+    print(f"streak_goal: {profile.streak_goal}")
+    print(f"preferred_kinds: {profile.preferred_kinds}")
     return 0
 
 
@@ -170,27 +210,78 @@ def cmd_assess(args: argparse.Namespace) -> int:
     kinds = _split_csv(args.kinds)
     tags = _split_csv(args.tags)
     answers = _parse_answers(args.answers) if args.answers else None
-    result = _run_session(app.assess, args.questions, topics, kinds, tags, answers, on=None)
+    result = _run_session(
+        app.assess, args.questions, topics, kinds, tags, answers, on=None, lang=_lang(args, "en")
+    )
     return _print_assessment(result)
 
 
 def cmd_drill(args: argparse.Namespace) -> int:
     app = _app(args)
+    if not app.due_topics(_parse_date(args.on)):
+        print("No topics are due. The schedule was left unchanged.")
+        return 0
     kinds = _split_csv(args.kinds)
     tags = _split_csv(args.tags)
     answers = _parse_answers(args.answers) if args.answers else None
+    try:
+        result = _run_session(
+            lambda count, _topics, choose, kinds, tags, on, on_scored: app.drill(
+                count, choose, kinds, tags, on, on_scored
+            ),
+            args.questions,
+            None,
+            kinds,
+            tags,
+            answers,
+            on=_parse_date(args.on),
+            lang=_lang(args, "en"),
+        )
+    except NothingDue:
+        print("No topics are due. The schedule was left unchanged.")
+        return 0
+    return _print_assessment(result)
+
+
+def cmd_today(args: argparse.Namespace) -> int:
+    app = _app(args)
+    lang = _lang(args, "zh")
+    try:
+        setup = app.prepare_today(on=_parse_date(args.on), lang=lang)
+    except LookupError:
+        print(no_profile_text(lang))
+        return 1
+    for line in setup.lines:
+        print(line)
+    answers = _parse_answers(args.answers) if args.answers else None
     result = _run_session(
-        lambda count, _topics, choose, kinds, tags, on, on_scored: app.drill(
-            count, choose, kinds, tags, on, on_scored
+        lambda count, topics, choose, kinds, tags, on, on_scored: app.assess(
+            count,
+            topics,
+            choose,
+            kinds=kinds,
+            tags=tags,
+            on=on,
+            on_scored=on_scored,
+            must_ask=setup.must_ask,
         ),
         args.questions,
+        setup.topics,
+        setup.kinds,
         None,
-        kinds,
-        tags,
         answers,
         on=_parse_date(args.on),
+        lang=lang,
     )
-    return _print_assessment(result)
+    correct = result.correct_count
+    print()
+    if lang == "zh":
+        print(f"这次练了 {len(result.answers)} 题，完全答对 {correct} 题。")
+    else:
+        print(f"Practiced {len(result.answers)} items, {correct} fully correct.")
+    for line in app.closing_lines(result, lang):
+        print(line)
+    return 0
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -248,7 +339,7 @@ def cmd_replan(args: argparse.Namespace) -> int:
 
 def cmd_ask(args: argparse.Namespace) -> int:
     app = _app(args)
-    print(app.agent(args.llm).ask(" ".join(args.question)))
+    print(app.agent(args.llm, lang=_lang(args, "zh")).ask(" ".join(args.question)))
     return 0
 
 
@@ -326,37 +417,52 @@ def _split_csv(raw: str) -> list[str] | None:
     return items or None
 
 
-def _run_session(runner, count, topics, kinds, tags, answers, on):
+def _run_session(runner, count, topics, kinds, tags, answers, on, lang: str = "en"):
     if answers is None and not sys.stdin.isatty():
         raise RuntimeError("pass --answers when stdin is not a terminal")
+    chinese = lang == "zh"
 
     def choose(question):
-        _print_question(question)
+        _print_question(question, lang)
         if answers is None:
             if question.kind == "open":
-                return _read_open()
-            return _read_choice(len(question.choices))
+                return _read_open(lang)
+            return _read_choice(len(question.choices), lang)
         if choose.cursor >= len(answers):
             raise RuntimeError("not enough --answers for the requested questions")
         choice = answers[choose.cursor]
         choose.cursor += 1
         if question.kind == "open":
             text = choice if isinstance(choice, str) else str(choice)
-            print(f"Your answer: {text}")
+            prefix = "你的回答" if chinese else "Your answer"
+            print(f"{prefix}: {text}")
             return text
         if isinstance(choice, str):
             raise ValueError("multiple-choice answers must be a letter or an index")
         if choice < 0 or choice >= len(question.choices):
             raise ValueError("answer index is out of range")
-        print(f"Your answer: {chr(ord('A') + choice)}")
+        prefix = "你的回答" if chinese else "Your answer"
+        print(f"{prefix}: {chr(ord('A') + choice)}")
         return choice
 
-    def on_scored(_question, scored) -> None:
+    def on_scored(question, scored) -> None:
         if scored.kind == "open":
-            hits = ", ".join(scored.rubric_hits) if scored.rubric_hits else "none"
-            print(f"Rubric score: {round(scored.score * 100)}% (hit: {hits})")
+            hits = ", ".join(scored.rubric_hits) if scored.rubric_hits else ("无" if chinese else "none")
+            if chinese:
+                print(f"要点得分：{round(scored.score * 100)}%（命中：{hits}）")
+            else:
+                print(f"Rubric score: {round(scored.score * 100)}% (hit: {hits})")
+        elif chinese:
+            print("答对了。" if scored.correct else "没对。")
         else:
             print("Correct." if scored.correct else "Not correct.")
+        if not scored.correct and question.explanation:
+            label = "说明" if chinese else "Explanation"
+            print(f"{label}: {question.explanation}")
+            if question.kind == "mcq" and 0 <= question.answer < len(question.choices):
+                letter = chr(ord("A") + question.answer)
+                answer_label = "参考答案" if chinese else "Answer"
+                print(f"{answer_label}: {letter}. {question.choices[question.answer]}")
 
     choose.cursor = 0  # type: ignore[attr-defined]
     return runner(count, topics, choose, kinds, tags, on, on_scored)
@@ -377,6 +483,8 @@ def _print_assessment(result) -> int:
             f"confidence {confidence_percent(score.information):3d}%  "
             f"({score.correct}/{score.answered}, credit {score.credit:.1f})  next_review {review}"
         )
+    if result.autolog and result.autolog.logged:
+        print(f"Logged day {result.autolog.day_index} as done (acceptance criteria met).")
     return 0
 
 
@@ -423,7 +531,7 @@ def _parse_answers(raw: str) -> list[int | str]:
     return parsed
 
 
-def _print_question(question) -> None:
+def _print_question(question, lang: str = "en") -> None:
     tags = f" · tags: {', '.join(question.tags)}" if question.tags else ""
     kind = "open" if question.kind == "open" else "mcq"
     print()
@@ -432,7 +540,7 @@ def _print_question(question) -> None:
         f"{question.prompt}"
     )
     if question.kind == "open":
-        print("Rubric:")
+        print("要点：" if lang == "zh" else "Rubric:")
         for point in question.rubric:
             print(f"  - {point.label}")
         return
@@ -440,19 +548,23 @@ def _print_question(question) -> None:
         print(f"  {chr(ord('A') + index)}. {choice}")
 
 
-def _read_open() -> str:
-    print("Answer (one line):")
+def _read_open(lang: str = "en") -> str:
+    print("用一句话回答：" if lang == "zh" else "Answer (one line):")
     return input().strip()
 
 
-def _read_choice(count: int) -> int:
+def _read_choice(count: int, lang: str = "en") -> int:
     while True:
-        raw = input("Answer (A-D): ").strip().lower()
+        raw = input("答案（A-D）：" if lang == "zh" else "Answer (A-D): ").strip().lower()
         if raw in "abcd"[:count]:
             return ord(raw) - ord("a")
         if raw.isdigit() and 0 <= int(raw) < count:
             return int(raw)
-        print("Enter A, B, C, or D.")
+        print("请输入 A、B、C 或 D。" if lang == "zh" else "Enter A, B, C, or D.")
+
+
+def _lang(args: argparse.Namespace, default: str) -> str:
+    return normalize_lang(getattr(args, "lang", None), default)
 
 
 def _print_plan(plan) -> None:

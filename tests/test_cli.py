@@ -50,7 +50,9 @@ def test_cli_flow(tmp_path, capsys):
     assert main([*db, "replan", "--start", "2026-02-09"]) == 0
     assert "policy: shrink" in capsys.readouterr().out
     assert main([*db, "ask", "what should I study today"]) == 0
-    assert "Acceptance criteria" in capsys.readouterr().out
+    advice = capsys.readouterr().out
+    assert "接下来" in advice
+    assert "做到这几件就算完成" in advice
 
 
 def test_missing_profile_is_an_error(tmp_path, capsys):

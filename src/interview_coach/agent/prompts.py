@@ -2,62 +2,40 @@
 
 from __future__ import annotations
 
+from interview_coach.coach_text import (
+    render_error,
+    render_plan,
+    render_profile,
+    render_progress,
+    render_scores,
+    render_today,
+)
+
 SYSTEM_PROMPT = """You are an interview study coach.
-Use the local tools to read the learner profile, topic scores, active 7-day plan, and progress.
-Recommend the next block using the plan's minutes and acceptance criteria.
-Do not invent scores, dates, or criteria that the tools did not return.
+Use the local tools before you answer. They are the only source of profile, scores, plan, and progress.
+Reply in short sentences. Lead with what to do in the next session, about 30 minutes.
+Then give 2 or 3 acceptance checks. Name weak areas in plain language.
+Do not open with raw ability, mastery, or confidence numbers. If you mention a number, it must be one the tools returned, and it comes after the action.
+Never invent scores, dates, minutes, or criteria.
 When a tool returns an error, tell the learner the next command to run.
-Stay concrete: one focus, the minute budget, and the measurable check.
-Topic scores include a confidence percent from how much information the answers carried.
-Open answers are scored with the local rubric. Do not call a model to grade them.
+Reply in Chinese unless the user explicitly asks for English.
+Open answers are scored locally. Do not grade them yourself.
 """
 
 
-def render_tool_reply(tool_name: str, payload: dict) -> str:
+def render_tool_reply(tool_name: str, payload: dict, lang: str = "zh") -> str:
     if payload.get("error"):
-        return f"{payload['error']} Next: interview-coach profile init --name YourName --role backend"
+        return render_error(str(payload["error"]), lang)
     if tool_name == "get_today":
-        criteria = "\n".join(f"- {item}" for item in payload.get("acceptance_criteria", []))
-        return (
-            f"Today is day {payload['day_index']} ({payload['date']}): {payload['label']}.\n"
-            f"Budget: {payload['minutes']} minutes.\n"
-            f"Objective: {payload['objective']}\n"
-            f"Acceptance criteria:\n{criteria}"
-        )
+        return render_today(payload, lang)
     if tool_name == "get_progress":
-        return (
-            f"Plan v{payload['version']}: {payload['days_done']} done, "
-            f"{payload['days_missed']} missed, {payload['days_pending']} pending.\n"
-            f"Reported completion: {payload['reported_completion']}. "
-            f"Quiz accuracy: {payload['quiz_accuracy']}.\n"
-            f"Minutes logged: {payload['minutes_spent']}."
-        )
+        return render_progress(payload, lang)
     if tool_name == "get_plan":
-        lines = [
-            f"Plan v{payload['version']} ({payload['policy']}), {payload['daily_minutes']} min/day, "
-            f"starts {payload['start_date']}."
-        ]
-        for day in payload["days"]:
-            lines.append(
-                f"Day {day['day_index']} [{day['status']}] {day['label']} — {day['minutes']} min. "
-                f"Check: {day['acceptance_criteria'][0]}"
-            )
-        return "\n".join(lines)
+        return render_plan(payload, lang)
     if tool_name == "get_scores":
-        lines = ["Topic scores (weakest first):"]
-        for score in payload["scores"]:
-            lines.append(
-                f"- {score['label']}: ability {score['ability']}, "
-                f"mastery {score['mastery']}, confidence {score.get('confidence', '0%')}, "
-                f"{score['correct']}/{score['answered']}"
-            )
-        if payload.get("weakest"):
-            lines.append("Spend the next block on " + ", ".join(payload["weakest"]) + ".")
-        return "\n".join(lines)
+        return render_scores(payload, lang)
     if tool_name == "get_profile":
-        return (
-            f"Profile {payload['name']}, role {payload['target_role']}, "
-            f"target {payload.get('target_id', 'generic_tech')}, level {payload['level']}, "
-            f"{payload['daily_minutes']} minutes/day."
-        )
-    return "No local tool result to render."
+        return render_profile(payload, lang)
+    if lang == "zh":
+        return "没有本地结果。下一步：interview-coach today"
+    return "No local result. Next: interview-coach today"
