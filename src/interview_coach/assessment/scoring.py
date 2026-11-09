@@ -78,3 +78,20 @@ def ability_standard_error(information: float) -> float | None:
 def mastery_percent(ability: float) -> int:
     raw = (clamp_ability(ability) - MIN_ABILITY) / (MAX_ABILITY - MIN_ABILITY) * 100
     return int(round(raw))
+
+
+def is_weak_evidence(answered: int, correct: int, credit: float) -> bool:
+    """True only when this topic has at least one graded answer that was not full credit.
+
+    Unpracticed topics are not weak. A perfect record is not weak, even if the
+    ability number is still near the prior. ``credit`` of 0 with ``correct ==
+    answered`` is treated as full credit so hand-built rows that never stored
+    partial credit stay strong.
+    """
+    if answered <= 0:
+        return False
+    if correct < answered:
+        return True
+    if credit > 0 and credit / answered < 0.999:
+        return True
+    return False

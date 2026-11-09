@@ -56,14 +56,17 @@ def test_questions_are_not_repeated():
     bank = QuestionBank()
     engine = AdaptiveAssessment(bank, topics=["python"], kinds=["mcq"])
     available = [question for question in bank.for_topic("python") if question.kind == "mcq"]
+    assert len(available) > 6
     asked = []
     for _ in range(len(available)):
         question = engine.next_question()
-        assert question is not None
+        if question is None:
+            break
         assert question.kind == "mcq"
+        assert question.id not in asked
         asked.append(question.id)
         engine.submit(question.id, 0)
-    assert len(asked) == len(set(asked)) == len(available)
+    assert len(asked) == len(set(asked)) == 6
     assert engine.next_question() is None
 
 

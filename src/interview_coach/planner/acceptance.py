@@ -1,7 +1,8 @@
 """Check a practice session against one plan day's acceptance criteria.
 
-Minutes and reflection lines are satisfied by finishing the session.
-Score lines and open-item rubric lines are checked against the answers.
+Only score lines and open-item rubric lines count. Reflection lines are not
+checks. A session that was asked for only mcq or only open drops the checks
+that kind cannot meet.
 """
 
 from __future__ import annotations
@@ -30,15 +31,38 @@ def open_item_id(criteria: tuple[str, ...] | list[str]) -> str | None:
     return None
 
 
+def applicable_criteria(
+    criteria: tuple[str, ...] | list[str],
+    kinds: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    """Keep checks this mix can actually score."""
+    if kinds is None:
+        allowed = {"mcq", "open"}
+    else:
+        allowed = {kind.strip().lower() for kind in kinds if kind and kind.strip()}
+        if not allowed:
+            allowed = {"mcq", "open"}
+    kept: list[str] = []
+    for raw in criteria:
+        opened = OPEN_RE.search(raw)
+        quiz = QUIZ_RE.search(raw)
+        if opened and quiz and "open" in allowed:
+            kept.append(raw)
+        elif quiz and not opened and "mcq" in allowed:
+            kept.append(raw)
+    return kept
+
+
 def evaluate(
     criteria: tuple[str, ...] | list[str],
     answers: tuple[ScoredAnswer, ...] | list[ScoredAnswer],
     topics: set[str],
+    kinds: list[str] | tuple[str, ...] | None = None,
 ) -> Verdict:
     relevant = [answer for answer in answers if answer.topic in topics]
     missing: list[str] = []
     checks = 0
-    for raw in criteria:
+    for raw in applicable_criteria(criteria, kinds):
         opened = OPEN_RE.search(raw)
         quiz = QUIZ_RE.search(raw)
         if opened and quiz:

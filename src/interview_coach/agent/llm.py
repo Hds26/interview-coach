@@ -84,7 +84,24 @@ def _intent(messages: list[dict]) -> str:
     text = _last_user_text(messages).lower()
     if any(token in text for token in ("progress", "进度", "completion", "完成率")):
         return "get_progress"
-    if any(token in text for token in ("score", "weak", "assess", "掌握", "分数", "shortboard", "confidence", "信心")):
+    if any(
+        token in text
+        for token in (
+            "score",
+            "weak",
+            "assess",
+            "掌握",
+            "分数",
+            "shortboard",
+            "confidence",
+            "信心",
+            "弱",
+            "薄弱",
+            "短板",
+            "不熟",
+            "错题",
+        )
+    ):
         return "get_scores"
     if any(token in text for token in ("profile", "画像", "who am i")):
         return "get_profile"

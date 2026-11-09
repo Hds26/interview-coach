@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from interview_coach.models import Question
 
 _TOKEN = re.compile(r"[a-z0-9]+")
+_CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
+# A keyword must not match only as the tail of a negation: 未排序 does not hit 排序.
+_CJK_NEGATION = frozenset("不未非无")
 _CONTRACTIONS = (
     ("don't", "do not"),
     ("doesn't", "does not"),
@@ -44,7 +47,7 @@ def score_rubric(question: Question, text: str) -> RubricScore:
         if point.weight <= 0:
             raise ValueError(f"{question.id} has a non-positive rubric weight")
         total += point.weight
-        if haystack and any(_keyword_in(keyword, haystack) for keyword in point.keywords):
+        if any(_keyword_in(keyword, haystack, text) for keyword in point.keywords):
             earned += point.weight
             hits.append(point.label)
     ratio = 0.0 if total == 0 else earned / total
@@ -59,7 +62,37 @@ def _tokens(text: str) -> list[str]:
     return _TOKEN.findall(lowered)
 
 
-def _keyword_in(keyword: str, haystack: list[str]) -> bool:
+def _keyword_in(keyword: str, haystack: list[str], raw: str = "") -> bool:
+    """Match an English token sequence or a Chinese phrase.
+
+    Chinese is not space-separated, so CJK keywords match as phrases. A pure
+    Latin keyword still uses the token rules, which keep ``sorted`` from
+    hitting inside ``unsorted``.
+    """
+    cjk_runs = _CJK_RUN.findall(keyword)
+    latin = _tokens(keyword)
+    if cjk_runs and not latin:
+        return all(_cjk_in(run, raw) for run in cjk_runs)
+    if cjk_runs and latin:
+        return all(_cjk_in(run, raw) for run in cjk_runs) and _latin_in(keyword, haystack)
+    return _latin_in(keyword, haystack)
+
+
+def _cjk_in(keyword: str, raw: str) -> bool:
+    if not keyword or not raw:
+        return False
+    folded = re.sub(r"\s+", "", raw)
+    start = 0
+    while True:
+        index = folded.find(keyword, start)
+        if index < 0:
+            return False
+        if index == 0 or folded[index - 1] not in _CJK_NEGATION:
+            return True
+        start = index + len(keyword)
+
+
+def _latin_in(keyword: str, haystack: list[str]) -> bool:
     parts = _tokens(keyword)
     if not parts:
         return False

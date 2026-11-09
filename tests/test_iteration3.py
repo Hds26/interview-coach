@@ -109,9 +109,9 @@ def test_wrong_answer_prints_the_explanation(tmp_path, capsys):
     )
     assert code == 0
     output = capsys.readouterr().out
-    assert "Not correct." in output
-    assert "Explanation:" in output
-    assert "merging" in output
+    assert "没对" in output
+    assert "说明" in output
+    assert "归并" in output
 
 
 def test_sessions_do_not_repeat_items_until_the_pool_is_exhausted(tmp_path):
@@ -129,7 +129,8 @@ def test_sessions_do_not_repeat_items_until_the_pool_is_exhausted(tmp_path):
         assert row["seen_count"] == 1
         assert row["next_due"] > "2026-05-01"
     third = app.assess(1, ["python"], _perfect, kinds=["mcq"], on=date(2026, 5, 1))
-    assert third.answers[0].question_id in seen | again
+    # The bank has more than six multiple-choice items, so the next one is still unseen.
+    assert third.answers[0].question_id not in seen | again
 
 
 def test_due_item_returns_before_unseen_ones(tmp_path):

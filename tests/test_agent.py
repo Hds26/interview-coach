@@ -52,8 +52,13 @@ def test_offline_routes_progress_and_scores(tmp_path):
     app = _ready(tmp_path)
     progress = app.agent("offline").ask("show my progress")
     assert "计划 v1" in progress
+    app.db.conn.execute(
+        "UPDATE topic_score SET ability = 2.0, answered = 2, correct = 0, credit = 0 WHERE topic = 'databases'"
+    )
+    app.db.conn.commit()
     scores = app.agent("offline").ask("what are my weak scores?")
     assert "目前较薄弱" in scores
+    assert "数据库" in scores
     assert "ability" not in scores.lower()
 
 

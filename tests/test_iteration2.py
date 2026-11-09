@@ -315,7 +315,7 @@ def test_cli_open_answer_export_import_and_drill(tmp_path, capsys):
         == 0
     )
     assessed = capsys.readouterr().out
-    assert "Rubric score: 100%" in assessed
+    assert "要点得分：100%" in assessed
     assert "confidence" in assessed
     assert main([*db, "plan", "--start", "2026-03-02"]) == 0
     assert "Open item py-open" in capsys.readouterr().out
@@ -347,5 +347,5 @@ def test_cli_open_answer_export_import_and_drill(tmp_path, capsys):
         )
         == 0
     )
-    assert "Finished 1 questions" in capsys.readouterr().out
+    assert "完成 1 题" in capsys.readouterr().out
     assert main([*db, "profile", "init", "--name", "Ada", "--role", "backend", "--target", "nope"]) == 1

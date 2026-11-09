@@ -163,17 +163,20 @@ def canonical_target(target: str) -> str:
 
 
 def infer_target(role: str) -> str:
-    """Pick a stub from a job-title string. Used only when the user asks."""
+    """Pick a stub from a job title. Chinese titles count the same as English ones."""
     text = role.lower()
-    if "system design" in text or "system_design" in text:
+    if "system design" in text or "system_design" in text or "系统设计" in text:
         return "system_design_exam"
-    if "python" in text and "exam" in text:
+    if ("python" in text and "exam" in text) or "python考试" in text or "python 考试" in text:
         return "python_exam"
-    if any(token in text for token in ("frontend", "front-end", "front end", "react")):
+    if any(token in text for token in ("frontend", "front-end", "front end", "react", "前端")):
         return "frontend_engineer"
-    if any(token in text for token in ("data engineer", "data-engineer", "etl", "warehouse", "spark")):
+    if any(
+        token in text
+        for token in ("data engineer", "data-engineer", "etl", "warehouse", "spark", "数据工程师", "数据开发")
+    ):
         return "data_engineer"
-    if any(token in text for token in ("backend", "back-end", "back end")):
+    if any(token in text for token in ("backend", "back-end", "back end", "后端", "服务端")):
         return "backend_engineer"
     return "generic_tech"
 
