@@ -30,9 +30,9 @@ def test_week_has_seven_measurable_days_at_the_daily_budget():
     assert days[0].focus == "databases"
     assert days[5].focus.startswith("review:")
     assert days[6].focus.startswith("mock:")
-    assert "Review: Review" not in days[5].objective
-    assert "Mock: Mock" not in days[6].objective
-    assert "Databases, Networking" in days[5].objective
+    assert "复习的复习" not in days[5].objective
+    assert "模拟的模拟" not in days[6].objective
+    assert "数据库、网络" in days[5].objective
     for day in days:
         assert day.acceptance_criteria
         for criterion in day.acceptance_criteria:
@@ -67,7 +67,7 @@ def test_shrink_week_repeats_the_three_weakest_topics():
     core = {day.focus for day in days if day.day_index <= 5}
     assert days[0].focus == "databases"
     assert core == {"databases", "networking", "system_design"}
-    assert "easy" in days[0].acceptance_criteria[1]
+    assert any("easy" in criterion for criterion in days[0].acceptance_criteria)
 
 
 def test_steady_week_pulls_unfinished_topics_forward():

@@ -4,21 +4,10 @@ from __future__ import annotations
 
 import re
 
-from interview_coach.assessment.bank import display_topic
+from interview_coach.assessment.bank import chinese_subject, display_topic
+from interview_coach.assessment.scoring import is_weak_evidence
 from interview_coach.models import PlanDay, TopicScore
 from interview_coach.planner.acceptance import OPEN_RE, QUIZ_RE
-from interview_coach.planner.planner import focus_topics
-
-ZH_TOPICS = {
-    "arrays_hashing": "数组和哈希",
-    "trees_graphs": "树和图",
-    "complexity": "复杂度",
-    "databases": "数据库",
-    "networking": "网络",
-    "python": "Python",
-    "system_design": "系统设计",
-    "concurrency": "并发",
-}
 
 
 def normalize_lang(lang: str | None, default: str = "zh") -> str:
@@ -35,24 +24,33 @@ def normalize_lang(lang: str | None, default: str = "zh") -> str:
 def plain_topic(topic: str, lang: str) -> str:
     if lang != "zh":
         return display_topic(topic)
-    labels = [ZH_TOPICS.get(part, part) for part in focus_topics(topic)]
-    joined = "、".join(labels)
     if topic.startswith("review:"):
-        return f"复习（{joined}）"
+        return f"复习（{chinese_subject(topic)}）"
     if topic.startswith("mock:"):
-        return f"模拟（{joined}）"
-    return joined
+        return f"模拟（{chinese_subject(topic)}）"
+    return chinese_subject(topic)
+
+
+def weak_topics(
+    scores: list[TopicScore] | tuple[TopicScore, ...],
+    limit: int = 3,
+) -> list[TopicScore]:
+    """Topics the learner has actually missed. Unpracticed rows are left out."""
+    chosen = [item for item in scores if is_weak_evidence(item.answered, item.correct, item.credit)]
+    chosen.sort(key=lambda item: (item.ability, item.topic))
+    return chosen[:limit]
 
 
 def weak_labels(scores: list[TopicScore] | tuple[TopicScore, ...], lang: str, limit: int = 3) -> list[str]:
-    ordered = sorted(scores, key=lambda item: (item.ability, item.topic))
-    return [plain_topic(item.topic, lang) for item in ordered[:limit]]
+    return [plain_topic(item.topic, lang) for item in weak_topics(scores, limit)]
 
 
 def coach_bullets(criteria: tuple[str, ...] | list[str], lang: str, limit: int = 3) -> list[str]:
-    ranked = sorted(criteria, key=lambda raw: (0 if _measurable(raw) else 1))
+    """Only lines the session scores. Unscored prompts are not listed as checks."""
     bullets: list[str] = []
-    for raw in ranked:
+    for raw in criteria:
+        if OPEN_RE.search(raw) is None and QUIZ_RE.search(raw) is None:
+            continue
         bullets.append(_bullet(raw, lang))
         if len(bullets) == limit:
             break
@@ -115,8 +113,11 @@ def closing_lines(
     days_done: int,
     streak_goal: int,
     weak: list[str],
+    streak: int = 0,
+    days_missed: int = 0,
 ) -> list[str]:
     label = plain_topic(focus, lang) if focus else ""
+    weak_line = _weak_line(weak, lang)
     if lang == "zh":
         if logged and day_index is not None:
             lines = [f"今天已记入完成：第 {day_index} 天（{label}）。"]
@@ -124,38 +125,54 @@ def closing_lines(
                 nxt = plain_topic(next_day.focus, lang)
                 lines.append(
                     f"接下来：第 {next_day.day_index} 天练{nxt}，大约 {next_day.minutes} 分钟。"
-                    f"本周已完成 {days_done} 天，连续目标 {streak_goal} 天。"
+                    f"{_streak_sentence(days_done, days_missed, streak, streak_goal, lang)}"
                 )
             else:
                 lines.append("这 7 天都有记录了。明天再运行 interview-coach today 会排下一周。")
-            if weak:
-                lines.append("目前较薄弱：" + "、".join(weak) + "。")
+            if weak_line:
+                lines.append(weak_line)
             return lines[:3]
         lines = ["今天先不记完成。"]
         detail = format_missing(missing, lang)
         if detail:
             lines.append(detail)
-        lines.append("接下来：再运行 interview-coach today，把这一天补完。")
-        return lines[:3]
+        follow = "接下来：再运行 interview-coach today，把这一天补完。"
+        if days_missed:
+            follow = (
+                f"本周错过 {days_missed} 天，连续打卡 {streak} 天。"
+                "接下来：再运行 interview-coach today，把这一天补完。"
+            )
+        lines.append(follow)
+        if weak_line:
+            lines.append(weak_line)
+        return lines
     if logged and day_index is not None:
         lines = [f"Logged day {day_index} ({label}) as done."]
         if next_day is not None:
             nxt = plain_topic(next_day.focus, lang)
             lines.append(
                 f"Next: day {next_day.day_index}, {nxt}, about {next_day.minutes} minutes. "
-                f"{days_done} done this week, streak goal {streak_goal}."
+                f"{_streak_sentence(days_done, days_missed, streak, streak_goal, lang)}"
             )
         else:
             lines.append("This week is fully logged. interview-coach today will plan the next one.")
-        if weak:
-            lines.append("Weaker right now: " + ", ".join(weak) + ".")
+        if weak_line:
+            lines.append(weak_line)
         return lines[:3]
     lines = ["Not logged yet."]
     detail = format_missing(missing, lang)
     if detail:
         lines.append(detail)
-    lines.append("Next: run interview-coach today again and finish this day.")
-    return lines[:3]
+    follow = "Next: run interview-coach today again and finish this day."
+    if days_missed:
+        follow = (
+            f"{days_missed} missed this week, streak {streak}. "
+            "Next: run interview-coach today again and finish this day."
+        )
+    lines.append(follow)
+    if weak_line:
+        lines.append(weak_line)
+    return lines
 
 
 def render_today(payload: dict, lang: str) -> str:
@@ -179,20 +196,19 @@ def render_today(payload: dict, lang: str) -> str:
 
 
 def render_scores(payload: dict, lang: str) -> str:
+    """Evidence-based weak areas. No wrong answers means no diagnosis."""
     minutes = payload.get("daily_minutes", 30)
     weak = _payload_weak(payload, lang)
-    first = weak[0] if weak else ("最弱的一块" if lang == "zh" else "the weakest topic")
     if lang == "zh":
-        lines = [f"接下来 {minutes} 分钟：先补{first}。"]
-        if weak:
-            lines.append("目前较薄弱：" + "、".join(weak) + "。")
-        lines.append("先把这一块讲清楚，再看下一题。")
-        return "\n".join(lines)
-    lines = [f"Next {minutes} minutes: start with {first}."]
-    if weak:
-        lines.append("Weaker right now: " + ", ".join(weak) + ".")
-    lines.append("Explain that topic once before the next question.")
-    return "\n".join(lines)
+        if not weak:
+            return "还没有做错的记录，不能判断哪里弱。\n下一步：interview-coach today，做完再看错题。"
+        return (
+            f"按已做的题，目前较薄弱：{'、'.join(weak)}。\n"
+            f"接下来 {minutes} 分钟：先补{weak[0]}。"
+        )
+    if not weak:
+        return "No wrong answers yet, so there is no evidenced weak topic.\nNext: interview-coach today."
+    return f"From the answers so far, weaker: {', '.join(weak)}.\nNext {minutes} minutes: start with {weak[0]}."
 
 
 def render_progress(payload: dict, lang: str) -> str:
@@ -263,8 +279,20 @@ def _payload_weak(payload: dict, lang: str) -> list[str]:
     return [label for label in labels if label]
 
 
-def _measurable(raw: str) -> bool:
-    return OPEN_RE.search(raw) is not None or QUIZ_RE.search(raw) is not None or "minute" in raw.lower()
+def _weak_line(weak: list[str], lang: str) -> str:
+    if not weak:
+        return ""
+    if lang == "zh":
+        return "目前较薄弱：" + "、".join(weak) + "。"
+    return "Weaker right now: " + ", ".join(weak) + "."
+
+
+def _streak_sentence(days_done: int, days_missed: int, streak: int, streak_goal: int, lang: str) -> str:
+    if lang == "zh":
+        missed = f"，错过 {days_missed} 天" if days_missed else ""
+        return f"本周已完成 {days_done} 天{missed}，连续打卡 {streak} 天（目标 {streak_goal} 天）。"
+    missed = f", {days_missed} missed" if days_missed else ""
+    return f"{days_done} done this week{missed}, streak {streak} (goal {streak_goal})."
 
 
 def _bullet(raw: str, lang: str) -> str:

@@ -426,6 +426,30 @@ class Database:
         with self.conn:
             self.conn.execute("UPDATE plan_day SET status = ? WHERE id = ?", (status, plan_day_id))
 
+    def update_plan_day(
+        self,
+        plan_day_id: int,
+        focus: str,
+        minutes: int,
+        objective: str,
+        acceptance_criteria: tuple[str, ...] | list[str],
+    ) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE plan_day
+                SET focus = ?, minutes = ?, objective = ?, acceptance_criteria = ?
+                WHERE id = ?
+                """,
+                (focus, minutes, objective, json.dumps(list(acceptance_criteria)), plan_day_id),
+            )
+
+    def completed_dates(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT day_date FROM plan_day WHERE status = 'done' ORDER BY day_date"
+        ).fetchall()
+        return [row["day_date"] for row in rows]
+
     def add_log(
         self,
         plan_day_id: int,

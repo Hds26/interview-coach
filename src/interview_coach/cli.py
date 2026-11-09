@@ -12,11 +12,11 @@ from interview_coach.app import CoachApp, NothingDue, overall_mastery
 from interview_coach.assessment.bank import TOPICS, QuestionBank, display_topic
 from interview_coach.assessment.scoring import confidence_percent, mastery_percent
 from interview_coach.assessment.targets import TARGETS, target_label, weight_summary
-from interview_coach.coach_text import no_profile_text, normalize_lang
+from interview_coach.coach_text import no_profile_text, normalize_lang, plain_topic
 from interview_coach.db import Database
 from interview_coach.demo import run_demo
 from interview_coach.paths import default_db_path
-from interview_coach.profile.service import DEFAULT_DAILY_MINUTES, LEVELS
+from interview_coach.profile.service import LEVELS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,13 +79,13 @@ def build_parser() -> argparse.ArgumentParser:
     profile_sub = profile.add_subparsers(dest="profile_command", required=True)
     init = profile_sub.add_parser("init", parents=[shared], help="create or replace the profile")
     init.add_argument("--name", required=True)
-    init.add_argument("--role", required=True, help="job title, for example 'Backend engineer'")
-    init.add_argument("--level", choices=LEVELS, default="mid")
-    init.add_argument("--daily-minutes", type=int, default=DEFAULT_DAILY_MINUTES)
+    init.add_argument("--role", required=True, help="job title, for example 'Backend engineer' or 后端")
+    init.add_argument("--level", choices=LEVELS, default=None)
+    init.add_argument("--daily-minutes", type=int, default=None)
     init.add_argument(
         "--target",
-        default="generic_tech",
-        help="skill-weight preset (generic_tech, backend_engineer, python_exam, ...) or auto",
+        default=None,
+        help="skill-weight preset, or auto. Omit to infer from the job title on first init, or to keep the saved target later",
     )
     init.add_argument("--streak-goal", type=int, default=None, help="optional streak target, 0-30 (default 5)")
     init.add_argument("--kinds", default=None, help="preferred items: mcq, open, or mcq,open")
@@ -164,6 +164,7 @@ def _today_parser(sub: argparse._SubParsersAction, name: str, help_text: str) ->
     command.add_argument("--questions", type=int, default=5, help="items in today's session (default 5)")
     command.add_argument("--answers", default="", help="scripted answers, same form as assess")
     command.add_argument("--on", default="", help="YYYY-MM-DD (default: today)")
+    command.add_argument("--kinds", default=None, help="mcq, open, or mcq,open for this session")
     command.set_defaults(handler=cmd_today)
     return command
 
@@ -210,10 +211,11 @@ def cmd_assess(args: argparse.Namespace) -> int:
     kinds = _split_csv(args.kinds)
     tags = _split_csv(args.tags)
     answers = _parse_answers(args.answers) if args.answers else None
+    lang = _lang(args, "zh")
     result = _run_session(
-        app.assess, args.questions, topics, kinds, tags, answers, on=None, lang=_lang(args, "en")
+        app.assess, args.questions, topics, kinds, tags, answers, on=None, lang=lang
     )
-    return _print_assessment(result)
+    return _print_assessment(result, lang)
 
 
 def cmd_drill(args: argparse.Namespace) -> int:
@@ -224,6 +226,7 @@ def cmd_drill(args: argparse.Namespace) -> int:
     kinds = _split_csv(args.kinds)
     tags = _split_csv(args.tags)
     answers = _parse_answers(args.answers) if args.answers else None
+    lang = _lang(args, "zh")
     try:
         result = _run_session(
             lambda count, _topics, choose, kinds, tags, on, on_scored: app.drill(
@@ -235,19 +238,23 @@ def cmd_drill(args: argparse.Namespace) -> int:
             tags,
             answers,
             on=_parse_date(args.on),
-            lang=_lang(args, "en"),
+            lang=lang,
         )
     except NothingDue:
         print("No topics are due. The schedule was left unchanged.")
         return 0
-    return _print_assessment(result)
+    return _print_assessment(result, lang)
 
 
 def cmd_today(args: argparse.Namespace) -> int:
     app = _app(args)
     lang = _lang(args, "zh")
     try:
-        setup = app.prepare_today(on=_parse_date(args.on), lang=lang)
+        setup = app.prepare_today(
+            on=_parse_date(args.on),
+            lang=lang,
+            kinds=_split_csv(args.kinds) if getattr(args, "kinds", None) else None,
+        )
     except LookupError:
         print(no_profile_text(lang))
         return 1
@@ -279,7 +286,7 @@ def cmd_today(args: argparse.Namespace) -> int:
         print(f"这次练了 {len(result.answers)} 题，完全答对 {correct} 题。")
     else:
         print(f"Practiced {len(result.answers)} items, {correct} fully correct.")
-    for line in app.closing_lines(result, lang):
+    for line in app.closing_lines(result, lang, on=_parse_date(args.on)):
         print(line)
     return 0
 
@@ -298,6 +305,10 @@ def cmd_progress(args: argparse.Namespace) -> int:
     print(f"reported_completion: {round(progress.reported_completion * 100)}%")
     print(f"quiz_accuracy: {round(progress.quiz_accuracy * 100)}%")
     print(f"minutes_spent: {progress.minutes_spent}")
+    print(f"streak: {app.current_streak()}")
+    overdue = app.overdue_count()
+    if overdue:
+        print(f"overdue: {overdue}")
     print("topics:")
     shown = False
     for score in sorted(app.db.list_scores(), key=lambda item: (item.ability, item.topic)):
@@ -468,12 +479,18 @@ def _run_session(runner, count, topics, kinds, tags, answers, on, lang: str = "e
     return runner(count, topics, choose, kinds, tags, on, on_scored)
 
 
-def _print_assessment(result) -> int:
+def _print_assessment(result, lang: str = "zh") -> int:
     print()
-    print(
-        f"Finished {len(result.answers)} questions, "
-        f"{result.correct_count} correct, mastery {overall_mastery(result.scores)}%."
-    )
+    if lang == "zh":
+        print(
+            f"完成 {len(result.answers)} 题，完全答对 {result.correct_count} 题，"
+            f"掌握 {overall_mastery(result.scores)}%。"
+        )
+    else:
+        print(
+            f"Finished {len(result.answers)} questions, "
+            f"{result.correct_count} correct, mastery {overall_mastery(result.scores)}%."
+        )
     for score in sorted(result.scores, key=lambda item: (item.ability, item.topic)):
         if score.answered == 0:
             continue
@@ -534,9 +551,10 @@ def _parse_answers(raw: str) -> list[int | str]:
 def _print_question(question, lang: str = "en") -> None:
     tags = f" · tags: {', '.join(question.tags)}" if question.tags else ""
     kind = "open" if question.kind == "open" else "mcq"
+    label = plain_topic(question.topic, lang)
     print()
     print(
-        f"[{display_topic(question.topic)} · difficulty {question.difficulty} · {kind}{tags}] "
+        f"[{label} · difficulty {question.difficulty} · {kind}{tags}] "
         f"{question.prompt}"
     )
     if question.kind == "open":

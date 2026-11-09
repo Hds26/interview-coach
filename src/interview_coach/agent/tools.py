@@ -8,6 +8,8 @@ from typing import Callable
 from interview_coach.assessment.bank import display_topic
 from interview_coach.assessment.scoring import confidence_percent, mastery_percent
 from interview_coach.assessment.targets import target_label
+from interview_coach.coach_text import weak_topics
+from interview_coach.planner.acceptance import applicable_criteria
 
 ToolHandler = Callable[[dict], dict]
 
@@ -80,6 +82,10 @@ def build_registry(app: object) -> ToolRegistry:
         if missing:
             return missing
         scores = sorted(app.db.list_scores(), key=lambda item: (item.ability, item.topic))  # type: ignore[attr-defined]
+        weakest = [
+            {"topic": item.topic, "label": display_topic(item.topic)}
+            for item in weak_topics(scores)
+        ]
         rendered = [
             {
                 "topic": score.topic,
@@ -93,10 +99,6 @@ def build_registry(app: object) -> ToolRegistry:
                 "next_review": score.next_review,
             }
             for score in scores
-        ]
-        weakest = [
-            {"topic": item["topic"], "label": item["label"]}
-            for item in rendered[:3]
         ]
         profile = app.db.get_profile()  # type: ignore[attr-defined]
         return {
@@ -132,8 +134,13 @@ def build_registry(app: object) -> ToolRegistry:
             return {"error": "No active plan yet."}
         pending = [day for day in plan.days if day.status == "pending"]
         day = pending[0] if pending else plan.days[0]
-        scores = sorted(app.db.list_scores(), key=lambda item: (item.ability, item.topic))  # type: ignore[attr-defined]
-        weakest = [{"topic": score.topic, "label": display_topic(score.topic)} for score in scores[:3]]
+        scores = app.db.list_scores()  # type: ignore[attr-defined]
+        weakest = [
+            {"topic": item.topic, "label": display_topic(item.topic)}
+            for item in weak_topics(scores)
+        ]
+        profile = app.db.get_profile()  # type: ignore[attr-defined]
+        kinds = profile.preferred_kinds.split(",") if profile else ["mcq", "open"]
         return {
             "day_index": day.day_index,
             "date": day.day_date,
@@ -141,7 +148,7 @@ def build_registry(app: object) -> ToolRegistry:
             "label": display_topic(day.focus),
             "minutes": day.minutes,
             "objective": day.objective,
-            "acceptance_criteria": list(day.acceptance_criteria),
+            "acceptance_criteria": applicable_criteria(day.acceptance_criteria, kinds),
             "status": day.status,
             "weakest": weakest,
         }
