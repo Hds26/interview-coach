@@ -173,6 +173,26 @@ CREATE TABLE IF NOT EXISTS learner_skill (
     name TEXT NOT NULL,
     topic TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS star_session (
+    id INTEGER PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    situation TEXT NOT NULL,
+    task TEXT NOT NULL,
+    action TEXT NOT NULL,
+    result TEXT NOT NULL,
+    situation_score REAL NOT NULL,
+    task_score REAL NOT NULL,
+    action_score REAL NOT NULL,
+    result_score REAL NOT NULL,
+    total_score REAL NOT NULL,
+    weak_sections TEXT NOT NULL,
+    tips TEXT NOT NULL,
+    llm TEXT NOT NULL DEFAULT 'offline',
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -820,6 +840,73 @@ class Database:
                 """,
                 (plan_day_id, minutes_spent, int(completed), quiz_correct, quiz_total, notes, utc_now()),
             )
+
+    def save_star_session(
+        self,
+        item_id: str,
+        tags: tuple[str, ...] | list[str],
+        prompt: str,
+        sections: dict[str, str],
+        scores: dict[str, float],
+        total: float,
+        weak_sections: tuple[str, ...] | list[str],
+        tips: tuple[str, ...] | list[str],
+        llm: str,
+    ) -> int:
+        """Store one STAR practice. Does not touch topic scores, plans, or study logs."""
+        now = utc_now()
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO star_session (
+                    item_id, tags, prompt, situation, task, action, result,
+                    situation_score, task_score, action_score, result_score,
+                    total_score, weak_sections, tips, llm, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    json.dumps(list(tags), ensure_ascii=False),
+                    prompt,
+                    sections.get("situation", ""),
+                    sections.get("task", ""),
+                    sections.get("action", ""),
+                    sections.get("result", ""),
+                    float(scores["situation"]),
+                    float(scores["task"]),
+                    float(scores["action"]),
+                    float(scores["result"]),
+                    float(total),
+                    json.dumps(list(weak_sections), ensure_ascii=False),
+                    json.dumps(list(tips), ensure_ascii=False),
+                    llm,
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def latest_star(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM star_session ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    def latest_star_summary(self) -> dict | None:
+        row = self.latest_star()
+        if row is None:
+            return None
+        return {
+            "item_id": row["item_id"],
+            "total": float(row["total_score"]),
+            "weak_sections": list(json.loads(row["weak_sections"])),
+            "situation": float(row["situation_score"]),
+            "task": float(row["task_score"]),
+            "action": float(row["action_score"]),
+            "result": float(row["result_score"]),
+        }
+
+    def star_item_ids(self) -> list[str]:
+        rows = self.conn.execute("SELECT item_id FROM star_session ORDER BY id").fetchall()
+        return [row["item_id"] for row in rows]
 
     def list_logs(self, plan_id: int) -> list[StudyLog]:
         rows = self.conn.execute(

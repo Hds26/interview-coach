@@ -17,6 +17,8 @@ from interview_coach.db import Database
 from interview_coach.demo import run_demo
 from interview_coach.research.search import SearchUnavailable
 from interview_coach.research.service import PASTE_HINT, render_preview
+from interview_coach.star.parse import read_sections, split_answer_blob
+from interview_coach.star.render import render_report
 from interview_coach.paths import default_db_path
 from interview_coach.profile.service import LEVELS
 
@@ -200,7 +202,23 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("--yes", action="store_true", help="accept the preview without asking (tests and scripts)")
     research.add_argument("--on", default="", help="YYYY-MM-DD used as the bias start")
     research.set_defaults(handler=cmd_research)
+
+    _star_parser(sub, "star", "optional STAR practice; not part of today")
+    _star_parser(sub, "behavioral", "alias of star")
     return parser
+
+
+def _star_parser(sub: argparse._SubParsersAction, name: str, help_text: str) -> argparse.ArgumentParser:
+    command = sub.add_parser(name, parents=[_shared_flags()], help=help_text)
+    command.add_argument(
+        "--answers",
+        default="",
+        help="one paste (headings or blank lines), or four sections separated by ||",
+    )
+    command.add_argument("--item", default="", help="STAR item id; omit to draw one")
+    command.add_argument("--seed", type=int, default=None, help="draw seed when --item is omitted")
+    command.set_defaults(handler=cmd_star)
+    return command
 
 
 def _today_parser(sub: argparse._SubParsersAction, name: str, help_text: str) -> argparse.ArgumentParser:
@@ -450,6 +468,10 @@ def cmd_progress(args: argparse.Namespace) -> int:
         )
     if not shown:
         print("  (no answered topics)")
+    star = app.db.latest_star_summary()
+    if star is not None:
+        weak = ", ".join(star["weak_sections"]) or "-"
+        print(f"star: {round(star['total'] * 100)}%  weak: {weak}")
     return 0
 
 
@@ -627,6 +649,32 @@ def _confirm_research() -> bool:
     except EOFError:
         return False
     return answer in {"y", "yes", "是"}
+
+
+def cmd_star(args: argparse.Namespace) -> int:
+    app = _app(args)
+    lang = _lang(args, "zh")
+    if app.db.get_profile() is None:
+        print(no_profile_text(lang))
+        return 1
+    if args.answers:
+        sections = split_answer_blob(args.answers)
+    elif not sys.stdin.isatty():
+        raise RuntimeError("pass --answers when stdin is not a terminal")
+    else:
+        sections = read_sections(lang, input)
+    report = app.practice_star(
+        sections,
+        item_id=args.item or None,
+        seed=args.seed,
+        llm=getattr(args, "llm", "offline"),
+        lang=lang,
+    )
+    print(render_report(report, lang))
+    if report.llm_error:
+        print(f"error: {report.llm_error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_import(args: argparse.Namespace) -> int:

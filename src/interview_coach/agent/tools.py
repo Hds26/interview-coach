@@ -105,6 +105,7 @@ def build_registry(app: object) -> ToolRegistry:
             "scores": rendered,
             "weakest": weakest,
             "daily_minutes": profile.daily_minutes,
+            "star": _star_payload(app),
         }
 
     def get_plan(_: dict) -> dict:
@@ -126,6 +127,7 @@ def build_registry(app: object) -> ToolRegistry:
             "reported_completion": f"{round(progress.reported_completion * 100)}%",
             "quiz_accuracy": f"{round(progress.quiz_accuracy * 100)}%",
             "minutes_spent": progress.minutes_spent,
+            "star": _star_payload(app),
         }
 
     def get_today(_: dict) -> dict:
@@ -162,6 +164,17 @@ def build_registry(app: object) -> ToolRegistry:
             "get_today": get_today,
         }
     )
+
+
+def _star_payload(app: object) -> dict | None:
+    summary = app.db.latest_star_summary()  # type: ignore[attr-defined]
+    if not summary:
+        return None
+    return {
+        "total": summary["total"],
+        "weak_sections": list(summary["weak_sections"]),
+        "item_id": summary["item_id"],
+    }
 
 
 def _plan_payload(plan: object) -> dict:

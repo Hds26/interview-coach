@@ -98,8 +98,16 @@ def format_missing(missing: tuple[str, ...] | list[str], lang: str) -> str:
 
 def no_profile_text(lang: str) -> str:
     if lang == "zh":
-        return "还没有学习画像。\n下一步：interview-coach start --name 你的名字 --role 后端"
-    return "No profile yet.\nNext: interview-coach start --name YourName --role backend"
+        return (
+            "还没有学习画像。\n"
+            "下一步：interview-coach start --name 你的名字 --role 后端\n"
+            "或：interview-coach profile init --name 你的名字 --role 后端"
+        )
+    return (
+        "No profile yet.\n"
+        "Next: interview-coach start --name YourName --role backend\n"
+        "Or: interview-coach profile init --name YourName --role backend"
+    )
 
 
 def closing_lines(
@@ -201,14 +209,17 @@ def render_scores(payload: dict, lang: str) -> str:
     weak = _payload_weak(payload, lang)
     if lang == "zh":
         if not weak:
-            return "还没有做错的记录，不能判断哪里弱。\n下一步：interview-coach today，做完再看错题。"
-        return (
-            f"按已做的题，目前较薄弱：{'、'.join(weak)}。\n"
-            f"接下来 {minutes} 分钟：先补{weak[0]}。"
-        )
-    if not weak:
-        return "No wrong answers yet, so there is no evidenced weak topic.\nNext: interview-coach today."
-    return f"From the answers so far, weaker: {', '.join(weak)}.\nNext {minutes} minutes: start with {weak[0]}."
+            text = "还没有做错的记录，不能判断哪里弱。\n下一步：interview-coach today，做完再看错题。"
+        else:
+            text = (
+                f"按已做的题，目前较薄弱：{'、'.join(weak)}。\n"
+                f"接下来 {minutes} 分钟：先补{weak[0]}。"
+            )
+    elif not weak:
+        text = "No wrong answers yet, so there is no evidenced weak topic.\nNext: interview-coach today."
+    else:
+        text = f"From the answers so far, weaker: {', '.join(weak)}.\nNext {minutes} minutes: start with {weak[0]}."
+    return _with_star(text, payload, lang)
 
 
 def render_progress(payload: dict, lang: str) -> str:
@@ -218,14 +229,16 @@ def render_progress(payload: dict, lang: str) -> str:
     pending = payload.get("days_pending", 0)
     minutes = payload.get("minutes_spent", 0)
     if lang == "zh":
-        return (
+        text = (
             f"计划 v{version}：完成 {done} 天，错过 {missed} 天，还剩 {pending} 天。\n"
             f"已记录 {minutes} 分钟。完成得多就保持，漏得多就缩小范围。"
         )
-    return (
-        f"Plan v{version}: {done} done, {missed} missed, {pending} still open.\n"
-        f"{minutes} minutes logged. Keep going if most days are done; narrow the week if many were missed."
-    )
+    else:
+        text = (
+            f"Plan v{version}: {done} done, {missed} missed, {pending} still open.\n"
+            f"{minutes} minutes logged. Keep going if most days are done; narrow the week if many were missed."
+        )
+    return _with_star(text, payload, lang)
 
 
 def render_plan(payload: dict, lang: str) -> str:
@@ -265,6 +278,35 @@ def render_error(message: str, lang: str) -> str:
     if lang == "zh":
         return "还没有今天的计划。\n下一步：interview-coach today"
     return "No plan for today yet.\nNext: interview-coach today"
+
+
+_STAR_LABELS = {
+    "zh": {"situation": "情境", "task": "任务", "action": "行动", "result": "结果"},
+    "en": {"situation": "situation", "task": "task", "action": "action", "result": "result"},
+}
+
+
+def _with_star(text: str, payload: dict, lang: str) -> str:
+    line = _star_sentence(payload, lang)
+    if not line:
+        return text
+    return f"{text}\n{line}"
+
+
+def _star_sentence(payload: dict, lang: str) -> str:
+    star = payload.get("star")
+    if not isinstance(star, dict) or "total" not in star:
+        return ""
+    percent = int(round(float(star["total"]) * 100))
+    labels = _STAR_LABELS["en"] if lang == "en" else _STAR_LABELS["zh"]
+    weak = [labels.get(str(item), str(item)) for item in star.get("weak_sections") or []]
+    if lang == "zh":
+        if weak:
+            return f"最近一次 STAR {percent}%，较弱：{'、'.join(weak)}。"
+        return f"最近一次 STAR {percent}%，四段都完整。"
+    if weak:
+        return f"Latest STAR {percent}%, weak: {', '.join(weak)}."
+    return f"Latest STAR {percent}%, no weak section."
 
 
 def _payload_weak(payload: dict, lang: str) -> list[str]:

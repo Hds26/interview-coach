@@ -11,6 +11,8 @@ from interview_coach.assessment.bank import display_topic
 from interview_coach.assessment.scoring import confidence_percent, mastery_percent
 from interview_coach.db import Database
 from interview_coach.models import Question
+from interview_coach.star.bank import get_item
+from interview_coach.star.parse import SECTIONS
 
 MISS_TOPICS = {"databases", "system_design", "networking"}
 
@@ -91,6 +93,14 @@ def run_demo(db_path: Path, start: date | None = None, *, yes: bool = False) -> 
     print()
     print("Coach")
     print(advice)
+    print()
+    item = get_item("star-failure-outage")
+    story = {name: text for name, text in zip(SECTIONS, item.example, strict=True)}
+    star = app.practice_star(story, item_id=item.id, llm="offline")
+    print("STAR")
+    print(f"  item: {star.item_id}")
+    print(f"  score: {round(star.total * 100)}%")
+    print(f"  weak: {', '.join(star.weak) or '-'}")
     print()
     print("Demo complete")
     app.db.close()
