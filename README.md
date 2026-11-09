@@ -96,10 +96,12 @@ interview-coach export --format both --out data/week
 interview-coach import practice.json
 interview-coach ask "今天练什么"
 interview-coach research --paste
+interview-coach star
+interview-coach behavioral
 interview-coach demo
 ```
 
-`research` 是可选的，做完 `today` 再想按某个岗位加重时再用。
+`research` 是可选的，做完 `today` 再想按某个岗位加重时再用。`star` 也是可选的，主命令是 `star`，`behavioral` 是同一条命令的别名。
 
 `assess` 和 `drill` 达标时同样会自动记下当天，只要这一天的计划还没完成、练的就是这一天的主题。`drill` 只练到期主题。没有到期主题时它什么都不改，也不会重排复习日。
 
@@ -130,6 +132,22 @@ databases,4,0.5
 单独一个 JSON 数组也视为练习行。A bare JSON list is treated as practice rows.
 
 预设 / presets: `generic_tech`, `backend_engineer`, `frontend_engineer`, `data_engineer`, `python_exam`, `system_design_exam`. 后两个是考试模式的权重桩，不会新增题库分区。
+
+## 可选：STAR / Optional behavioral
+
+这不是每天的命令。`today` 不会抽行为题，也不会因为 STAR 改 7 天计划的主题权重。
+
+```bash
+interview-coach star
+interview-coach behavioral --lang en
+interview-coach star --item star-failure-outage --answers '情境：上个季度我在支付团队负责对账服务。||任务：我的目标是一小时内恢复，不能让延迟扩大。||行动：我先对齐差异，并留下日志 log。||结果：错误率从 12% 降到 0。如果下次重来，我会先看指标。'
+```
+
+一次大约 15–25 分钟，只抽一道本地行为题。标签包括场景、冲突、协作、失败、领导力。可以分段输入，也可以一次贴上，用「情境 / 任务 / 行动 / 结果」或空行分开；脚本里用 `||` 分隔四段。`--lang en` 只换教练的话，题干仍是中文。
+
+四段各自 0–1 分，总分是等权平均。评分在本地完成，认完整、具体、量化结果和反思，规则和开放题一样：`log` 不会命中 `catalog`。终端给出 2–3 条改写建议；答得不完整时再给一段模板示例。结果写入 SQLite。`progress` 和 `ask` 能看到最近一次分数和较弱的段。
+
+`--llm deepseek` 只润色这几条建议，不改分数。没有 `DEEPSEEK_API_KEY` 时仍用本地模板，退出码 1，并且不会发请求。
 
 ## 模型 / LLM
 
@@ -165,19 +183,28 @@ When `DEEPSEEK_API_KEY` is missing, `--llm deepseek` exits with code 1 and sends
 - **Spaced review.** 练过的主题会得到 `next_review`。`due` 列出到期主题。`replan` 在 steady / stretch 时把到期主题往前排。
 - **Replan.** 完成率低于 60% 则收缩。至少 85% 完成且测验正确率至少 70% 则加码。其余保持分钟数。
 - **Coach.** `ask` 先说接下来约 30 分钟做什么，再给能打分的验收标准。问「我哪里弱」时只根据错题回答；还没有错题就直接说现在判断不了。
-- **STAR.** 行为面试（STAR）还没做。以后可以加一个单独练习，不影响现在的每日命令。
+- **STAR.** `interview-coach star`（别名 `behavioral`）做一次 15–25 分钟的行为面试。本地打分、给出改写建议，并单独记在 SQLite 里。`progress` 和 `ask` 可以读到最近一次分数和较弱的段。它不进入每天的 5 题，也不改知识计划的主题权重。
+
+## 还没做 / Deferred
+
+- 编程题自动评测。
+- 用 DeepSeek 给知识题的开放回答打分。
+- 完整的 IRT 拟合。
+- 招聘网站抓取（Boss、拉勾、LinkedIn、牛客、Glassdoor）。
 
 ## 布局 / Layout
 
 ```
 src/interview_coach/
   assessment/   question bank, open rubrics, adaptive session, scoring, target weights
+  star/         optional STAR bank, local rubric, rewrite tips
   profile/      name, job title, target preset, daily minutes, optional streak and item types
   planner/      7-day plan, acceptance checks, replan policy
   tracker/      completion, spaced review, seen items, JSON/CSV import, Markdown/ICS export
+  research/     optional paste or one public search; not part of today
   agent/        prompts, local tools, offline, OpenAI, and DeepSeek clients
   cli.py        interview-coach entry point
-  demo.py       scripted week; asks before replacing a database
+  demo.py       scripted week plus one STAR example; asks before replacing a database
 data/           SQLite databases
 tests/          pytest
 ```
