@@ -25,6 +25,17 @@ from interview_coach.planner.planner import (
     choose_policy,
     explain_policy,
     focus_topics,
+    single_focus_day,
+)
+from interview_coach.research.extract import draft_items
+from interview_coach.research.service import (
+    BOOST,
+    EXPIRE_DAYS,
+    FULL_DAYS,
+    ResearchPreview,
+    boost_on,
+    prepare_paste,
+    prepare_query,
 )
 from interview_coach.profile.service import (
     DEFAULT_DAILY_MINUTES,
@@ -139,10 +150,10 @@ class CoachApp:
         today = on or date.today()
         started = time.monotonic()
         engine = AdaptiveAssessment(
-            self.bank,
+            self.practice_bank(),
             selected,
             prior=self.db.ability_map(),
-            weights=topic_weights(profile.target_id),
+            weights=self._weights(today),
             kinds=kinds,
             tags=tags,
             exposed=self.db.exposure_map(),
@@ -237,7 +248,7 @@ class CoachApp:
             scores,
             profile.daily_minutes,
             policy="steady",
-            weights=self._weights(),
+            weights=self._weights(start or date.today()),
             open_cursor=self._open_cursor(),
         )
         return self._store_plan(profile.daily_minutes, "initial", start or date.today(), drafts)
@@ -257,7 +268,7 @@ class CoachApp:
             minutes,
             policy=policy,
             carry=carry,
-            weights=self._weights(),
+            weights=self._weights(start_on),
             open_cursor=self._open_cursor(),
         )
         plan = self._store_plan(minutes, policy, start_on, drafts)
@@ -503,7 +514,7 @@ class CoachApp:
             scores,
             plan.daily_minutes,
             policy=policy,
-            weights=self._weights(),
+            weights=self._weights(research=False),
             open_cursor=self._open_cursor(),
         )
         focus_drafts = [item for item in drafts if not item.focus.startswith(("review:", "mock:"))]
@@ -556,8 +567,126 @@ class CoachApp:
             )
         return self.db.create_plan(minutes, policy, start.isoformat(), days)
 
-    def _weights(self) -> dict[str, float]:
-        return topic_weights(self.require_profile().target_id)
+    def practice_bank(self) -> QuestionBank:
+        """Local bank plus accepted research drafts. Empty research leaves the bank unchanged."""
+        drafts = self.db.load_draft_questions()
+        if not drafts:
+            return self.bank
+        by_id = {question.id: question for question in self.bank.questions}
+        for question in drafts:
+            by_id[question.id] = question
+        return QuestionBank(tuple(by_id.values()))
+
+    def preview_paste(
+        self,
+        text: str,
+        *,
+        label: str = "paste",
+        max_skills: int = 6,
+        max_items: int = 5,
+        on: date | None = None,
+        llm: str = "offline",
+        opener=None,
+    ) -> ResearchPreview:
+        self.require_profile()
+        return prepare_paste(
+            text,
+            label=label,
+            max_skills=max_skills,
+            max_items=max_items,
+            today=on,
+            llm=llm,
+            opener=opener,
+        )
+
+    def preview_query(
+        self,
+        query: str,
+        *,
+        max_skills: int = 6,
+        max_items: int = 5,
+        on: date | None = None,
+        opener=None,
+        search=None,
+    ) -> ResearchPreview:
+        self.require_profile()
+        return prepare_query(
+            query,
+            max_skills=max_skills,
+            max_items=max_items,
+            today=on,
+            opener=opener,
+            search=search,
+        )
+
+    def accept_research(self, preview: ResearchPreview, on: date | None = None) -> int:
+        """Write an already confirmed preview. Rejected previews must not call this."""
+        if not preview.skills or not preview.items:
+            raise ValueError("nothing to save")
+        today = on or date.today()
+        session_id = self.db.save_research(
+            preview.label,
+            [(source.url, source.title) for source in preview.sources],
+            [(skill.name, skill.topic) for skill in preview.skills],
+            [],
+            [
+                {
+                    "topic": topic,
+                    "boost": BOOST,
+                    "starts_on": today.isoformat(),
+                    "full_until": (today + timedelta(days=FULL_DAYS)).isoformat(),
+                    "expires_on": (today + timedelta(days=EXPIRE_DAYS)).isoformat(),
+                }
+                for topic in preview.topics
+            ],
+        )
+        items = draft_items(list(preview.skills), limit=len(preview.items), session_key=str(session_id))
+        self.db.save_research_items(session_id, items)
+        self._nudge_next_focus(preview.topics[0], today)
+        return session_id
+
+    def _nudge_next_focus(self, topic: str, today: date) -> None:
+        """Point the next pending focus day at the research topic. Leave the other days."""
+        plan = self.db.get_active_plan()
+        if plan is None:
+            return
+        weak = {
+            score.topic
+            for score in self.db.list_scores()
+            if is_weak_evidence(score.answered, score.correct, score.credit)
+        }
+        pending = [
+            day
+            for day in plan.days
+            if day.status == "pending" and not day.focus.startswith(("review:", "mock:"))
+        ]
+        if not pending:
+            return
+        day = pending[0]
+        current = focus_topics(day.focus)[0]
+        if current in weak or current == topic:
+            return
+        ability = next((score.ability for score in self.db.list_scores() if score.topic == topic), 3.0)
+        draft = single_focus_day(topic, day.minutes, ability, self._open_cursor())
+        self.db.update_plan_day(day.id, topic, day.minutes, draft.objective, draft.acceptance_criteria)
+
+    def _weights(self, on: date | None = None, *, research: bool = True) -> dict[str, float]:
+        table = topic_weights(self.require_profile().target_id)
+        if not research:
+            return table
+        today = on or date.today()
+        for row in self.db.bias_rows():
+            extra = boost_on(
+                today,
+                date.fromisoformat(row["starts_on"]),
+                date.fromisoformat(row["full_until"]),
+                date.fromisoformat(row["expires_on"]),
+                float(row["boost"]),
+            )
+            topic = row["topic"]
+            if extra > 0 and topic in table:
+                table[topic] = table[topic] + extra
+        return table
 
 
 def _resolve_kinds(preferred: str, override: list[str] | None) -> list[str]:

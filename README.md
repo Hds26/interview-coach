@@ -45,6 +45,26 @@ Running `profile init` again updates the name, role, and any preference you pass
 
 SQLite 在 `data/coach.sqlite`。可以用 `--db` 或 `INTERVIEW_COACH_DB` 换路径。
 
+## 可选：按职位说明加重 / Optional research
+
+这不是每天的命令。`today` / `go` 不会联网，也不要求先做 research。
+
+```bash
+interview-coach research --paste <<'EOF'
+后端岗位，使用 Redis 和 MySQL。
+EOF
+interview-coach research --show
+interview-coach research --clear
+```
+
+`--paste` 从标准输入读职位说明或笔记，映射到本地主题，生成最多 5 道中文草稿。终端里会先预览，确认 `y` 才写入；直接回车或在脚本里不写 `--yes` 则什么都不写，计划不变。原文不入库，只留下技能标签、生成的题干、来源标题和链接。
+
+权重在大约 7 天内提高，30 天后不再计入。它只影响接下来练什么，不会把这些主题说成薄弱项，也不会重写整周。
+
+`interview-coach research 公司 岗位` 只做一次公开检索。失败、过旧、广告，或结果落在登录墙后面时，提示改用 `--paste`。不会去抓 Boss、拉勾、LinkedIn、牛客或 Glassdoor。
+
+有 `DEEPSEEK_API_KEY` 时可以加 `--llm deepseek` 帮忙收技能名。没有密钥或调用失败就用本地抽取，不需要密钥。
+
 ## 练习时怎么作答 / Answering
 
 在终端里直接作答。脚本或管道里用 `--answers`：选择题写 `0,2,A`，开放题写 `|your answer|`（答案里不要加逗号）。
@@ -75,8 +95,11 @@ interview-coach replan
 interview-coach export --format both --out data/week
 interview-coach import practice.json
 interview-coach ask "今天练什么"
+interview-coach research --paste
 interview-coach demo
 ```
+
+`research` 是可选的，做完 `today` 再想按某个岗位加重时再用。
 
 `assess` 和 `drill` 达标时同样会自动记下当天，只要这一天的计划还没完成、练的就是这一天的主题。`drill` 只练到期主题。没有到期主题时它什么都不改，也不会重排复习日。
 

@@ -15,6 +15,8 @@ from interview_coach.assessment.targets import TARGETS, target_label, weight_sum
 from interview_coach.coach_text import no_profile_text, normalize_lang, plain_topic
 from interview_coach.db import Database
 from interview_coach.demo import run_demo
+from interview_coach.research.search import SearchUnavailable
+from interview_coach.research.service import PASTE_HINT, render_preview
 from interview_coach.paths import default_db_path
 from interview_coach.profile.service import LEVELS
 
@@ -156,6 +158,25 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd = sub.add_parser("import", parents=[shared], help="import practice from local JSON or CSV")
     import_cmd.add_argument("file", type=Path)
     import_cmd.set_defaults(handler=cmd_import)
+
+    research = sub.add_parser(
+        "research",
+        parents=[shared],
+        help="optional company or role targeting (not part of today)",
+        description=(
+            "Optional. Not part of interview-coach today. "
+            "Shows a preview and writes only after you confirm. 不是每天必做。"
+        ),
+    )
+    research.add_argument("query", nargs="*", help="company or role; omit this and pass --paste to stay offline")
+    research.add_argument("--paste", action="store_true", help="read a JD or notes from stdin; the note is not stored")
+    research.add_argument("--show", action="store_true", help="list accepted research")
+    research.add_argument("--clear", nargs="?", const="all", default=None, help="delete one session id, or all")
+    research.add_argument("--max-skills", type=int, default=6)
+    research.add_argument("--max-items", type=int, default=5)
+    research.add_argument("--yes", action="store_true", help="accept the preview without asking (tests and scripts)")
+    research.add_argument("--on", default="", help="YYYY-MM-DD used as the bias start")
+    research.set_defaults(handler=cmd_research)
     return parser
 
 
@@ -402,6 +423,103 @@ def cmd_export(args: argparse.Namespace) -> int:
         return 0
     print(text, end="" if text.endswith("\n") else "\n")
     return 0
+
+
+def cmd_research(args: argparse.Namespace) -> int:
+    app = _app(args)
+    if args.show:
+        return _research_show(app)
+    if args.clear is not None:
+        return _research_clear(app, args.clear)
+    if args.max_items < 1 or args.max_items > 5:
+        raise ValueError("max items must be from 1 to 5")
+    if args.max_skills < 1 or args.max_skills > 12:
+        raise ValueError("max skills must be from 1 to 12")
+    on = _parse_date(args.on)
+    if args.paste:
+        preview = app.preview_paste(
+            _read_paste(),
+            label=" ".join(args.query) or "paste",
+            max_skills=args.max_skills,
+            max_items=args.max_items,
+            on=on,
+            llm=args.llm,
+        )
+    elif args.query:
+        try:
+            preview = app.preview_query(
+                " ".join(args.query),
+                max_skills=args.max_skills,
+                max_items=args.max_items,
+                on=on,
+            )
+        except SearchUnavailable:
+            print(PASTE_HINT)
+            return 0
+    else:
+        raise ValueError("pass a query or --paste. research is optional and is not part of today")
+    print(render_preview(preview))
+    if not preview.skills or not preview.items:
+        if not args.paste:
+            print(PASTE_HINT)
+        return 0
+    if not args.yes and not _confirm_research():
+        print("未确认，没有写入。计划没有变化。")
+        return 0
+    session_id = app.accept_research(preview, on=on)
+    print(f"已写入研究 {session_id}。今天的命令仍然是 interview-coach today。")
+    return 0
+
+
+def _research_show(app: CoachApp) -> int:
+    sessions = app.db.research_sessions()
+    if not sessions:
+        print("还没有已确认的研究。")
+        return 0
+    for session in sessions:
+        detail = app.db.research_detail(int(session["id"]))
+        if detail is None:
+            continue
+        print(f"#{detail['id']}  {detail['label']}")
+        for source in detail["sources"]:
+            suffix = f"  {source['url']}" if source["url"] else ""
+            print(f"  source: {source['title']}{suffix}")
+        for skill in detail["skills"]:
+            print(f"  skill: {skill['name']} → {skill['topic']}")
+        print(f"  items: {len(detail['items'])}  origin=research_generated")
+    return 0
+
+
+def _research_clear(app: CoachApp, raw: str) -> int:
+    if raw == "all":
+        removed = app.db.clear_research(None)
+    else:
+        removed = app.db.clear_research(int(raw))
+    print(f"已清除 {removed} 条研究。")
+    return 0
+
+
+def _read_paste() -> str:
+    if sys.stdin.isatty():
+        print("贴上笔记，单独一行输入 . 结束。原文不会被保存。")
+        lines: list[str] = []
+        while True:
+            line = input()
+            if line.strip() == ".":
+                break
+            lines.append(line)
+        return "\n".join(lines)
+    return sys.stdin.read()
+
+
+def _confirm_research() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    try:
+        answer = input().strip().lower()
+    except EOFError:
+        return False
+    return answer in {"y", "yes", "是"}
 
 
 def cmd_import(args: argparse.Namespace) -> int:

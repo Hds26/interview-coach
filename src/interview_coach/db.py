@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from interview_coach.assessment.bank import TOPICS
-from interview_coach.models import PlanDay, Profile, StudyLog, StudyPlan, TopicScore
+from interview_coach.models import PlanDay, Profile, Question, RubricPoint, StudyLog, StudyPlan, TopicScore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS profile (
@@ -98,6 +98,52 @@ CREATE TABLE IF NOT EXISTS item_exposure (
     last_seen TEXT NOT NULL,
     last_score REAL NOT NULL,
     next_due TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_session (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS research_source (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES research_session(id),
+    url TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS skill_tag (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES research_session(id),
+    name TEXT NOT NULL,
+    topic TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS draft_item (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES research_session(id),
+    question_id TEXT NOT NULL UNIQUE,
+    topic TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    difficulty INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    choices TEXT NOT NULL,
+    answer INTEGER NOT NULL,
+    explanation TEXT NOT NULL,
+    rubric TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'research_generated'
+);
+
+CREATE TABLE IF NOT EXISTS plan_bias (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES research_session(id),
+    topic TEXT NOT NULL,
+    boost REAL NOT NULL,
+    starts_on TEXT NOT NULL,
+    full_until TEXT NOT NULL,
+    expires_on TEXT NOT NULL
 );
 """
 
@@ -449,6 +495,191 @@ class Database:
             "SELECT DISTINCT day_date FROM plan_day WHERE status = 'done' ORDER BY day_date"
         ).fetchall()
         return [row["day_date"] for row in rows]
+
+    def save_research(
+        self,
+        label: str,
+        sources: list[tuple[str, str]],
+        skills: list[tuple[str, str]],
+        items: list[Question],
+        biases: list[dict],
+    ) -> int:
+        """Persist an accepted research session. Callers must not pass the original note."""
+        now = utc_now()
+        with self.conn:
+            cursor = self.conn.execute(
+                "INSERT INTO research_session (label, created_at) VALUES (?, ?)",
+                (label, now),
+            )
+            session_id = int(cursor.lastrowid)
+            for url, title in sources:
+                self.conn.execute(
+                    "INSERT INTO research_source (session_id, url, title) VALUES (?, ?, ?)",
+                    (session_id, url[:300], title[:160]),
+                )
+            for name, topic in skills:
+                self.conn.execute(
+                    "INSERT INTO skill_tag (session_id, name, topic) VALUES (?, ?, ?)",
+                    (session_id, name[:40], topic),
+                )
+            for item in items:
+                rubric = [
+                    {"label": point.label, "keywords": list(point.keywords)}
+                    for point in item.rubric
+                ]
+                self.conn.execute(
+                    """
+                    INSERT INTO draft_item (
+                        session_id, question_id, topic, kind, difficulty, prompt, choices,
+                        answer, explanation, rubric, tags, origin
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'research_generated')
+                    """,
+                    (
+                        session_id,
+                        item.id,
+                        item.topic,
+                        item.kind,
+                        item.difficulty,
+                        item.prompt,
+                        json.dumps(list(item.choices), ensure_ascii=False),
+                        item.answer,
+                        item.explanation,
+                        json.dumps(rubric, ensure_ascii=False),
+                        json.dumps(list(item.tags), ensure_ascii=False),
+                    ),
+                )
+            for bias in biases:
+                self.conn.execute(
+                    """
+                    INSERT INTO plan_bias (
+                        session_id, topic, boost, starts_on, full_until, expires_on
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        bias["topic"],
+                        bias["boost"],
+                        bias["starts_on"],
+                        bias["full_until"],
+                        bias["expires_on"],
+                    ),
+                )
+        return session_id
+
+    def save_research_items(self, session_id: int, items: list[Question]) -> None:
+        with self.conn:
+            for item in items:
+                rubric = [
+                    {"label": point.label, "keywords": list(point.keywords)}
+                    for point in item.rubric
+                ]
+                self.conn.execute(
+                    """
+                    INSERT INTO draft_item (
+                        session_id, question_id, topic, kind, difficulty, prompt, choices,
+                        answer, explanation, rubric, tags, origin
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'research_generated')
+                    """,
+                    (
+                        session_id,
+                        item.id,
+                        item.topic,
+                        item.kind,
+                        item.difficulty,
+                        item.prompt,
+                        json.dumps(list(item.choices), ensure_ascii=False),
+                        item.answer,
+                        item.explanation,
+                        json.dumps(rubric, ensure_ascii=False),
+                        json.dumps(list(item.tags), ensure_ascii=False),
+                    ),
+                )
+
+    def research_sessions(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM research_session ORDER BY id").fetchall())
+
+    def research_counts(self) -> dict[str, int]:
+        counts = {}
+        for table in ("research_session", "research_source", "skill_tag", "draft_item", "plan_bias"):
+            row = self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+            counts[table] = int(row["n"])
+        return counts
+
+    def clear_research(self, session_id: int | None = None) -> int:
+        with self.conn:
+            if session_id is None:
+                sessions = self.research_counts()["research_session"]
+                for table in ("plan_bias", "draft_item", "skill_tag", "research_source", "research_session"):
+                    self.conn.execute(f"DELETE FROM {table}")
+                return sessions
+            self.conn.execute("DELETE FROM plan_bias WHERE session_id = ?", (session_id,))
+            self.conn.execute("DELETE FROM draft_item WHERE session_id = ?", (session_id,))
+            self.conn.execute("DELETE FROM skill_tag WHERE session_id = ?", (session_id,))
+            self.conn.execute("DELETE FROM research_source WHERE session_id = ?", (session_id,))
+            cursor = self.conn.execute("DELETE FROM research_session WHERE id = ?", (session_id,))
+            return int(cursor.rowcount)
+
+    def bias_rows(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM plan_bias ORDER BY id").fetchall())
+
+    def load_draft_questions(self) -> list[Question]:
+        rows = self.conn.execute("SELECT * FROM draft_item ORDER BY id").fetchall()
+        questions: list[Question] = []
+        for row in rows:
+            raw_rubric = json.loads(row["rubric"])
+            rubric = tuple(
+                RubricPoint(str(point["label"]), tuple(point["keywords"]))
+                for point in raw_rubric
+            )
+            questions.append(
+                Question(
+                    id=row["question_id"],
+                    topic=row["topic"],
+                    difficulty=int(row["difficulty"]),
+                    prompt=row["prompt"],
+                    choices=tuple(json.loads(row["choices"])),
+                    answer=int(row["answer"]),
+                    explanation=row["explanation"],
+                    kind=row["kind"],
+                    tags=tuple(json.loads(row["tags"])),
+                    rubric=rubric,
+                )
+            )
+        return questions
+
+    def research_detail(self, session_id: int) -> dict | None:
+        session = self.conn.execute(
+            "SELECT * FROM research_session WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        return {
+            "id": session["id"],
+            "label": session["label"],
+            "created_at": session["created_at"],
+            "sources": [
+                {"url": row["url"], "title": row["title"]}
+                for row in self.conn.execute(
+                    "SELECT url, title FROM research_source WHERE session_id = ? ORDER BY id",
+                    (session_id,),
+                )
+            ],
+            "skills": [
+                {"name": row["name"], "topic": row["topic"]}
+                for row in self.conn.execute(
+                    "SELECT name, topic FROM skill_tag WHERE session_id = ? ORDER BY id",
+                    (session_id,),
+                )
+            ],
+            "items": [
+                {"question_id": row["question_id"], "prompt": row["prompt"], "origin": row["origin"]}
+                for row in self.conn.execute(
+                    "SELECT question_id, prompt, origin FROM draft_item WHERE session_id = ? ORDER BY id",
+                    (session_id,),
+                )
+            ],
+        }
 
     def add_log(
         self,

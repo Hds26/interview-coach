@@ -209,6 +209,17 @@ def _day(
     return DayDraft(day_index, focus, minutes, objective, criteria)
 
 
+def single_focus_day(
+    topic: str,
+    minutes: int,
+    ability: float,
+    open_cursor: dict[str, int] | None = None,
+) -> DayDraft:
+    """One focus day. Callers use it to nudge a single pending day, not the week."""
+    usage = dict(open_cursor or {})
+    return _day(1, topic, minutes, ability, "steady", "focus", lambda name: _take_open(name, usage))
+
+
 def focus_topics(focus: str) -> list[str]:
     if focus.startswith(("review:", "mock:")):
         _, _, rest = focus.partition(":")
