@@ -117,6 +117,18 @@ def _token_hit(keyword: str, token: str) -> bool:
     return False
 
 
+def keyword_hit(text: str, keyword: str) -> bool:
+    """True when ``keyword`` matches a token or a Chinese phrase.
+
+    Matching is the same as open-item scoring. ``log`` does not hit inside
+    ``catalog``, and a negated Chinese tail such as ``未排序`` does not hit
+    ``排序``.
+    """
+    if not text or not keyword or not str(text).strip() or not str(keyword).strip():
+        return False
+    return _keyword_in(keyword, _tokens(text), text)
+
+
 def _stem(word: str) -> str:
     if len(word) > 4 and word.endswith("ies"):
         return word[:-3] + "y"

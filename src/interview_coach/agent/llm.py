@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -82,6 +83,8 @@ def _intent(messages: list[dict]) -> str:
         # Still route; the agent is responsible for sending the system prompt.
         pass
     text = _last_user_text(messages).lower()
+    if re.search(r"\bstar\b", text) or any(token in text for token in ("behavioral", "行为面试", "行为题")):
+        return "get_progress"
     if any(token in text for token in ("progress", "进度", "completion", "完成率")):
         return "get_progress"
     if any(

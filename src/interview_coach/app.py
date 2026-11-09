@@ -28,6 +28,7 @@ from interview_coach.planner.planner import (
     single_focus_day,
 )
 from interview_coach.research.extract import draft_items
+from interview_coach.star.service import StarReport, run_star_session
 from interview_coach.research.service import (
     BOOST,
     EXPIRE_DAYS,
@@ -453,6 +454,28 @@ class CoachApp:
             1
             for day in plan.days
             if day.status == "pending" and date.fromisoformat(day.day_date) < today
+        )
+
+    def practice_star(
+        self,
+        sections: dict[str, str],
+        *,
+        item_id: str | None = None,
+        seed: int | None = None,
+        llm: str = "offline",
+        lang: str = "zh",
+        opener=None,
+    ) -> StarReport:
+        """Score one behavioral story. Does not change the knowledge plan."""
+        self.require_profile()
+        return run_star_session(
+            self.db,
+            sections,
+            item_id=item_id,
+            seed=seed,
+            llm=llm,
+            lang=lang,
+            opener=opener,
         )
 
     def agent(self, llm_name: str = "offline", client: object | None = None, lang: str = "zh") -> CoachAgent:

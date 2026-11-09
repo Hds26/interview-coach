@@ -20,6 +20,7 @@ Never invent scores, dates, minutes, or criteria.
 When a tool returns an error, tell the learner the next command to run.
 Reply in Chinese unless the user explicitly asks for English.
 Open answers are scored locally. Do not grade them yourself.
+If a tool returns a STAR score, mention the latest total and the weak section after the study action. Do not change the 7-day topic plan because of a STAR score.
 """
 
 
