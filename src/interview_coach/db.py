@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from interview_coach.assessment.bank import TOPICS
+from interview_coach.learner.model import SOURCE_KINDS, LearnerModel, LearnerSkill
 from interview_coach.models import PlanDay, Profile, Question, RubricPoint, StudyLog, StudyPlan, TopicScore
 
 SCHEMA = """
@@ -144,6 +145,33 @@ CREATE TABLE IF NOT EXISTS plan_bias (
     starts_on TEXT NOT NULL,
     full_until TEXT NOT NULL,
     expires_on TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learner_model (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    minutes_per_day INTEGER NOT NULL,
+    practice_style TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learner_baseline (
+    id INTEGER PRIMARY KEY,
+    topic TEXT NOT NULL UNIQUE,
+    stance TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learner_source (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learner_skill (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES learner_source(id),
+    name TEXT NOT NULL,
+    topic TEXT NOT NULL
 );
 """
 
@@ -680,6 +708,99 @@ class Database:
                 )
             ],
         }
+
+    def save_learner_habits(self, minutes: int, style: str, weak: list[str] | None) -> None:
+        """Store minutes and practice style. ``weak is None`` leaves the baseline."""
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO learner_model (id, minutes_per_day, practice_style, updated_at)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    minutes_per_day = excluded.minutes_per_day,
+                    practice_style = excluded.practice_style,
+                    updated_at = excluded.updated_at
+                """,
+                (minutes, style, now),
+            )
+            if weak is None:
+                return
+            self.conn.execute("DELETE FROM learner_baseline")
+            for topic in weak:
+                if topic not in TOPICS:
+                    raise ValueError(f"unknown topic {topic}")
+                self.conn.execute(
+                    "INSERT INTO learner_baseline (topic, stance) VALUES (?, 'weak')",
+                    (topic,),
+                )
+
+    def replace_learner_source(self, kind: str, label: str, skills: list[tuple[str, str]]) -> None:
+        """Replace one paste kind. Skill names are lexicon hits, never the note."""
+        if kind not in SOURCE_KINDS:
+            raise ValueError("source kind must be resume, jd, or notes")
+        now = utc_now()
+        with self.conn:
+            rows = self.conn.execute(
+                "SELECT id FROM learner_source WHERE kind = ?",
+                (kind,),
+            ).fetchall()
+            for row in rows:
+                self.conn.execute("DELETE FROM learner_skill WHERE source_id = ?", (row["id"],))
+            self.conn.execute("DELETE FROM learner_source WHERE kind = ?", (kind,))
+            if not skills:
+                return
+            cursor = self.conn.execute(
+                "INSERT INTO learner_source (kind, label, created_at) VALUES (?, ?, ?)",
+                (kind, label[:40], now),
+            )
+            source_id = int(cursor.lastrowid)
+            for name, topic in skills:
+                if topic not in TOPICS:
+                    raise ValueError(f"unknown topic {topic}")
+                self.conn.execute(
+                    "INSERT INTO learner_skill (source_id, name, topic) VALUES (?, ?, ?)",
+                    (source_id, name[:40], topic),
+                )
+
+    def get_learner(self) -> LearnerModel | None:
+        row = self.conn.execute("SELECT * FROM learner_model WHERE id = 1").fetchone()
+        if row is None:
+            return None
+        weak_rows = self.conn.execute(
+            "SELECT topic FROM learner_baseline ORDER BY id"
+        ).fetchall()
+        skill_rows = self.conn.execute(
+            """
+            SELECT learner_skill.id, learner_skill.source_id, learner_source.kind,
+                   learner_skill.name, learner_skill.topic
+            FROM learner_skill
+            JOIN learner_source ON learner_source.id = learner_skill.source_id
+            ORDER BY learner_skill.id
+            """
+        ).fetchall()
+        return LearnerModel(
+            minutes_per_day=int(row["minutes_per_day"]),
+            practice_style=row["practice_style"],
+            self_weak=tuple(item["topic"] for item in weak_rows),
+            skills=tuple(
+                LearnerSkill(
+                    id=int(item["id"]),
+                    source_id=int(item["source_id"]),
+                    kind=item["kind"],
+                    name=item["name"],
+                    topic=item["topic"],
+                )
+                for item in skill_rows
+            ),
+        )
+
+    def set_plan_minutes(self, plan_id: int, minutes: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE study_plan SET daily_minutes = ? WHERE id = ?",
+                (minutes, plan_id),
+            )
 
     def add_log(
         self,

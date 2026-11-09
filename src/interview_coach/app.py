@@ -17,6 +17,14 @@ from interview_coach.assessment.scoring import is_weak_evidence, item_informatio
 from interview_coach.assessment.targets import topic_weights
 from interview_coach.coach_text import closing_lines, intro_lines, weak_labels
 from interview_coach.db import Database
+from interview_coach.learner.model import (
+    SOURCE_LABELS,
+    parse_style,
+    parse_weak,
+    plan_carry,
+    render_start,
+    resolve_weak,
+)
 from interview_coach.models import AssessmentResult, AutoLog, PlanDay, Profile, Progress, StudyPlan, TopicScore
 from interview_coach.planner.acceptance import applicable_criteria, evaluate, open_item_id
 from interview_coach.planner.planner import (
@@ -59,6 +67,13 @@ class NothingDue(RuntimeError):
 class ImportResult:
     practice_count: int
     log_count: int
+
+
+@dataclass(frozen=True)
+class StartResult:
+    profile: Profile
+    plan: StudyPlan
+    summary: str
 
 
 @dataclass(frozen=True)
@@ -129,8 +144,93 @@ class CoachApp:
     def require_profile(self) -> Profile:
         profile = self.db.get_profile()
         if profile is None:
-            raise LookupError("No profile yet. Run: interview-coach profile init --name YourName --role backend")
+            raise LookupError("No profile yet. Run: interview-coach start --name YourName --role 后端")
         return profile
+
+    def start_onboarding(
+        self,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+        daily_minutes: int | None = None,
+        kinds: str | None = None,
+        weak: str | None = None,
+        pastes: list[tuple[str, str]] | None = None,
+        on: date | None = None,
+        llm: str = "offline",
+        opener=None,
+    ) -> StartResult:
+        """Save habits and pasted skill tags, then build or refresh the 7-day plan.
+
+        Pasted text is mapped with the same local skill list as ``research --paste``.
+        The note itself is not stored. Ability scores are left as they are.
+        """
+        if kinds is not None:
+            parse_style(kinds)
+        if weak is not None:
+            parse_weak(weak)
+        for kind, _text in pastes or []:
+            if kind not in SOURCE_LABELS:
+                raise ValueError("paste kind must be resume, jd, or notes")
+        existing = self.db.get_profile()
+        if existing is None and (not name or not name.strip() or not role or not role.strip()):
+            raise ValueError("name and role are required")
+        chosen_name = name.strip() if name and name.strip() else (existing.name if existing else "")
+        chosen_role = role.strip() if role and role.strip() else (existing.target_role if existing else "")
+        style = parse_style(kinds) if kinds is not None else None
+        profile = self.init_profile(
+            chosen_name,
+            chosen_role,
+            daily_minutes=daily_minutes,
+            preferred_kinds=style,
+        )
+        previous = self.db.get_learner()
+        self.db.save_learner_habits(
+            profile.daily_minutes,
+            profile.preferred_kinds,
+            resolve_weak(weak, previous.self_weak if previous else None),
+        )
+        for kind, text in pastes or []:
+            self._save_paste(kind, text, llm=llm, opener=opener)
+        plan = self.refresh_plan_from_learner(on)
+        model = self.db.get_learner()
+        assert model is not None
+        summary = render_start(
+            minutes=profile.daily_minutes,
+            style=profile.preferred_kinds,
+            self_weak=model.self_weak,
+            skills=model.skills,
+            plan=plan,
+            scores=self.db.list_scores(),
+        )
+        return StartResult(profile, plan, summary)
+
+    def refresh_plan_from_learner(self, on: date | None = None) -> StudyPlan:
+        """Create the week, or rewrite pending days from the learner model."""
+        profile = self.require_profile()
+        today = on or date.today()
+        plan = self.db.get_active_plan()
+        if plan is None:
+            return self.create_plan(start=today)
+        if not any(day.status == "pending" for day in plan.days):
+            revised, _reason = self.replan(start=today)
+            return revised
+        pending = [day for day in plan.days if day.status == "pending"]
+        policy = plan.policy if plan.policy in {"shrink", "stretch", "steady"} else "steady"
+        drafts = build_week(
+            self.db.list_scores(),
+            profile.daily_minutes,
+            policy=policy,
+            carry=self._learner_carry(),
+            weights=self._weights(today),
+            open_cursor=self._open_cursor(),
+        )
+        self._apply_drafts(pending, drafts, profile.daily_minutes)
+        if plan.daily_minutes != profile.daily_minutes:
+            self.db.set_plan_minutes(plan.id, profile.daily_minutes)
+        updated = self.db.get_active_plan()
+        assert updated is not None
+        return updated
 
     def assess(
         self,
@@ -244,11 +344,13 @@ class CoachApp:
         if self.db.get_active_plan() is not None and not force:
             raise RuntimeError("an active plan already exists; use replan or plan --force")
         scores = self.db.list_scores()
+        today = start or date.today()
         drafts = build_week(
             scores,
             profile.daily_minutes,
             policy="steady",
-            weights=self._weights(start or date.today()),
+            carry=self._learner_carry(),
+            weights=self._weights(today),
             open_cursor=self._open_cursor(),
         )
         return self._store_plan(profile.daily_minutes, "initial", start or date.today(), drafts)
@@ -262,7 +364,11 @@ class CoachApp:
         policy = choose_policy(progress.reported_completion, progress.quiz_accuracy)
         minutes = adjusted_minutes(profile.daily_minutes, policy)
         start_on = start or date.today()
-        carry = _merge(self.db.due_topics(start_on.isoformat()), unfinished_focuses(current))
+        carry = _merge(
+            self.db.due_topics(start_on.isoformat()),
+            unfinished_focuses(current),
+            self._learner_carry(),
+        )
         drafts = build_week(
             self.db.list_scores(),
             minutes,
@@ -514,9 +620,35 @@ class CoachApp:
             scores,
             plan.daily_minutes,
             policy=policy,
+            carry=self._learner_carry(),
             weights=self._weights(research=False),
             open_cursor=self._open_cursor(),
         )
+        self._apply_drafts(pending, drafts, plan.daily_minutes)
+
+    def _save_paste(self, kind: str, text: str, *, llm: str, opener) -> None:
+        if kind not in SOURCE_LABELS:
+            raise ValueError("paste kind must be resume, jd, or notes")
+        skills: list[tuple[str, str]] = []
+        if text.strip():
+            preview = prepare_paste(
+                text,
+                label=SOURCE_LABELS[kind],
+                max_skills=6,
+                max_items=1,
+                llm=llm,
+                opener=opener,
+            )
+            skills = [(skill.name, skill.topic) for skill in preview.skills]
+        self.db.replace_learner_source(kind, SOURCE_LABELS[kind], skills)
+
+    def _learner_carry(self) -> list[str]:
+        model = self.db.get_learner()
+        if model is None:
+            return []
+        return plan_carry(self.db.list_scores(), model.self_weak, model.topics())
+
+    def _apply_drafts(self, pending: list[PlanDay], drafts: list, minutes: int) -> None:
         focus_drafts = [item for item in drafts if not item.focus.startswith(("review:", "mock:"))]
         review = next(item for item in drafts if item.focus.startswith("review:"))
         mock = next(item for item in drafts if item.focus.startswith("mock:"))
@@ -531,11 +663,19 @@ class CoachApp:
                 focus_index += 1
             # Keep a day whose topic is already right so a retry still matches its open item.
             if day.focus == draft.focus:
+                if day.minutes != minutes:
+                    self.db.update_plan_day(
+                        day.id,
+                        day.focus,
+                        minutes,
+                        day.objective,
+                        day.acceptance_criteria,
+                    )
                 continue
             self.db.update_plan_day(
                 day.id,
                 draft.focus,
-                day.minutes,
+                minutes,
                 draft.objective,
                 draft.acceptance_criteria,
             )

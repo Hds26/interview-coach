@@ -10,7 +10,7 @@ Python 3.11 or newer.
 
 ```bash
 pip install -e ".[dev]"
-interview-coach profile init --name Ada --role "Backend engineer"
+interview-coach start --name Ada --role 后端
 interview-coach today
 ```
 
@@ -30,7 +30,7 @@ interview-coach today
 
 The coach speaks Chinese by default, and so do the questions. `--lang en` switches the coach copy to English; the items stay Chinese. A topic is called weak only after a wrong or partial answer.
 
-第一次没有画像时，它会告诉你唯一需要的初始化命令，不会先问一长串问题。每天时长默认 30 分钟。连续打卡按完成的日历日计算；跳过一天，连续天数会断，过期没做的日子会记为错过。
+第一次没有画像时，运行 `interview-coach start`。它只问名字、职位、每天几分钟、练习方式、自评薄弱主题，也可以直接用参数一次写完。每天时长默认 30 分钟。连续打卡按完成的日历日计算；跳过一天，连续天数会断，过期没做的日子会记为错过。
 
 ```bash
 interview-coach profile init --name Ada --role "后端" --daily-minutes 30 --streak-goal 5 --kinds mcq,open
@@ -44,6 +44,23 @@ interview-coach today --kinds mcq
 Running `profile init` again updates the name, role, and any preference you pass. Omit `--level`, `--daily-minutes`, or `--target` to keep the saved values. It does not wipe ability scores, answer history, or the plan. `--reset` clears ability scores and leaves the plan in place.
 
 SQLite 在 `data/coach.sqlite`。可以用 `--db` 或 `INTERVIEW_COACH_DB` 换路径。
+
+## 第一次：学习画像 / Onboarding
+
+`start` 把习惯、自评和可选的简历或职位说明记进 SQLite，并排出 7 天计划和验收标准。之后每天仍然是 `today`。
+
+```bash
+interview-coach start --name Ada --role 后端 --daily-minutes 25 --kinds 开放题 --weak 网络 --paste-jd <<'EOF'
+后端岗位，使用 Redis 和 MySQL。
+EOF
+interview-coach today
+```
+
+终端里直接运行 `interview-coach start` 会问那几项。简历和职位说明也可以用 `--resume-file` 和 `--jd-file` 同时传入。原文不入库，只留下映射到本地主题的技能名。
+
+自评和职位说明只决定先练什么，不会写成能力分，也不会被说成「已经证明的薄弱项」。已经做过的题如果和它们冲突，以做题记录为准。没有密钥时全程离线。`--llm deepseek` 只在设置了 `DEEPSEEK_API_KEY` 时帮忙收技能名，失败就用本地词表。
+
+`profile init` 仍可单独改名字和职位。`start` 不会清空做题记录。
 
 ## 可选：按职位说明加重 / Optional research
 
@@ -82,6 +99,7 @@ Seen items are stored in SQLite and are not served again until that pool is exha
 日常不需要记这些。原来的命令都还在。
 
 ```bash
+interview-coach start --name Ada --role 后端
 interview-coach profile show
 interview-coach targets
 interview-coach topics
@@ -159,6 +177,7 @@ When `DEEPSEEK_API_KEY` is missing, `--llm deepseek` exits with code 1 and sends
 - **Assessment.** 每个主题能力值 1 到 5。答对升高，答错降低。开放题用本地 rubric 打 0 到 1 的部分分。每个主题一轮最多 6 题。题干、选项、说明和要点都是中文。
 - **Exposure.** 做过的题会记下。同一题不会在下一轮立刻出现，除非这个范围内的题都见过，或者这道题到了复习日。
 - **Confidence.** 信息量近似 `区分度² × p × (1 − p)`。把握度是 `信息量 / (信息量 + 1)`。这些数字还在 `progress` 里，教练开口时不拿它们当第一句话。
+- **Start.** 一条命令记下每天分钟数、练习方式、自评薄弱主题，以及可选的简历或职位说明。原文不保存。它排出或刷新 7 天计划和能打分的验收标准，不编造能力分。做题记录和自评或职位说明冲突时，做题记录排前面。
 - **Profile.** 一位学习者、一个职位、一个目标预设、每天分钟数。默认 30 分钟（允许 10–180）。连续打卡目标默认 5，打印出来的是已经连续完成的天数，不是把目标当成已经做到。偏好题型默认选择题加开放题。
 - **Plan.** 七天。还没有做题时按权重排；出现错题之后，剩下的日子和下周会把这些主题排到前面，而不是死守一开始的字母序。收缩一周时分数线只降不升。
 - **Auto-log.** `today`、`assess`、`drill` 练的是当前未完成的那一天，并且这一次实际会打分的标准都达到时，自动把这一天记为完成。分钟数是实际用时。验收里只留能打分的几条，不要求「写下 3 条定义」这种没有判分的句子。
@@ -173,6 +192,7 @@ When `DEEPSEEK_API_KEY` is missing, `--llm deepseek` exits with code 1 and sends
 src/interview_coach/
   assessment/   question bank, open rubrics, adaptive session, scoring, target weights
   profile/      name, job title, target preset, daily minutes, optional streak and item types
+  learner/      onboarding model: habits, self-rated topics, pasted skill tags
   planner/      7-day plan, acceptance checks, replan policy
   tracker/      completion, spaced review, seen items, JSON/CSV import, Markdown/ICS export
   agent/        prompts, local tools, offline, OpenAI, and DeepSeek clients

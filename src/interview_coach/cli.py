@@ -73,6 +73,29 @@ def build_parser() -> argparse.ArgumentParser:
     _today_parser(sub, "today", "do today's practice, then log it when the checks pass")
     _today_parser(sub, "go", "same as today")
 
+    start = sub.add_parser(
+        "start",
+        parents=[shared],
+        help="answer a few questions, save a learner model, and build the 7-day plan",
+    )
+    start.add_argument("--name", default=None)
+    start.add_argument("--role", default=None, help="job title, for example 后端")
+    start.add_argument("--daily-minutes", type=int, default=None)
+    start.add_argument("--kinds", default=None, help="mcq, open, mcq,open, 选择题, 开放题, or 都要")
+    start.add_argument(
+        "--weak",
+        default=None,
+        help="self-rated weak topics, comma-separated. Does not write scores",
+    )
+    start.add_argument("--paste-jd", action="store_true", help="read a JD from stdin; the note is not stored")
+    start.add_argument("--paste-resume", action="store_true", help="read a resume from stdin; the note is not stored")
+    start.add_argument("--paste-notes", action="store_true", help="read notes from stdin; the note is not stored")
+    start.add_argument("--jd-file", type=Path, default=None, help="local JD file")
+    start.add_argument("--resume-file", type=Path, default=None, help="local resume file")
+    start.add_argument("--notes-file", type=Path, default=None, help="local notes file")
+    start.add_argument("--on", default="", help="YYYY-MM-DD for the plan start when a new week is created")
+    start.set_defaults(handler=cmd_start)
+
     demo = sub.add_parser("demo", parents=[shared], help="run a scripted week and print the report")
     demo.add_argument("--yes", action="store_true", help="delete an existing database without asking")
     demo.set_defaults(handler=cmd_demo)
@@ -195,6 +218,80 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return run_demo(path, yes=bool(getattr(args, "yes", False)))
 
 
+def cmd_start(args: argparse.Namespace) -> int:
+    pastes, weak, name, role, minutes, kinds = _start_inputs(args)
+    app = _app(args)
+    if app.db.get_profile() is None and (not name or not role):
+        print(no_profile_text("zh"))
+        return 1
+    result = app.start_onboarding(
+        name=name,
+        role=role,
+        daily_minutes=minutes,
+        kinds=kinds,
+        weak=weak,
+        pastes=pastes,
+        on=_parse_date(args.on),
+        llm=args.llm,
+    )
+    print(result.summary)
+    return 0
+
+
+def _start_inputs(args: argparse.Namespace):
+    paste_flags = [flag for flag in ("paste_jd", "paste_resume", "paste_notes") if getattr(args, flag)]
+    if len(paste_flags) > 1:
+        raise ValueError("paste only one of resume, jd, or notes from stdin")
+    files = {
+        "jd": args.jd_file,
+        "resume": args.resume_file,
+        "notes": args.notes_file,
+    }
+    if paste_flags:
+        kind = paste_flags[0].removeprefix("paste_")
+        if files[kind] is not None:
+            raise ValueError(f"pass either --{paste_flags[0].replace('_', '-')} or --{kind}-file")
+    pastes: list[tuple[str, str]] = []
+    for kind, path in files.items():
+        if path is not None:
+            pastes.append((kind, Path(path).read_text(encoding="utf-8")))
+    if paste_flags:
+        pastes.append((paste_flags[0].removeprefix("paste_"), _read_paste()))
+    name = args.name
+    role = args.role
+    minutes = args.daily_minutes
+    kinds = args.kinds
+    weak = args.weak
+    bare = (
+        name is None
+        and role is None
+        and minutes is None
+        and kinds is None
+        and weak is None
+        and not pastes
+    )
+    if bare and _missing_profile(args) and sys.stdin.isatty():
+        name, role, minutes, kinds, weak = _prompt_start()
+    return pastes, weak, name, role, minutes, kinds
+
+
+def _missing_profile(args: argparse.Namespace) -> bool:
+    return _app(args).db.get_profile() is None
+
+
+def _prompt_start() -> tuple[str, str, int | None, str | None, str | None]:
+    print("用几件事排好 7 天。直接回车表示用默认。原文不会保存。")
+    name = input("名字：").strip()
+    role = input("目标职位：").strip()
+    minutes_raw = input("每天几分钟（回车 = 30）：").strip()
+    style_raw = input("练习方式：1 选择题  2 开放题  3 都要（回车 = 3）：").strip()
+    weak_raw = input("觉得弱的主题，可空（例如 数据库,网络）：").strip()
+    minutes = int(minutes_raw) if minutes_raw else None
+    kinds = style_raw or None
+    weak = weak_raw
+    return name, role, minutes, kinds, weak
+
+
 def cmd_profile_init(args: argparse.Namespace) -> int:
     profile = _app(args).init_profile(
         args.name,
@@ -214,7 +311,8 @@ def cmd_profile_init(args: argparse.Namespace) -> int:
 
 
 def cmd_profile_show(args: argparse.Namespace) -> int:
-    profile = _app(args).require_profile()
+    app = _app(args)
+    profile = app.require_profile()
     print(f"name: {profile.name}")
     print(f"role: {profile.target_role}")
     print(f"target: {profile.target_id} ({target_label(profile.target_id)})")
@@ -223,6 +321,15 @@ def cmd_profile_show(args: argparse.Namespace) -> int:
     print(f"daily_minutes: {profile.daily_minutes}")
     print(f"streak_goal: {profile.streak_goal}")
     print(f"preferred_kinds: {profile.preferred_kinds}")
+    model = app.db.get_learner()
+    if model is not None:
+        print(f"self_weak: {', '.join(model.self_weak) if model.self_weak else '-'}")
+        parts = []
+        for kind in ("resume", "jd", "notes"):
+            topics = model.topics(kind)
+            if topics:
+                parts.append(kind + "=" + "+".join(topics))
+        print(f"source_topics: {', '.join(parts) if parts else '-'}")
     return 0
 
 
