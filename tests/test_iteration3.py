@@ -267,4 +267,4 @@ def test_missing_profile_on_today_is_one_next_step(tmp_path, capsys):
     assert code == 1
     output = capsys.readouterr().out
     assert "学习画像" in output
-    assert "profile init" in output
+    assert "interview-coach start" in output

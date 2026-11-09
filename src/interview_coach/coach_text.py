@@ -71,7 +71,7 @@ def intro_lines(
         if replanned:
             lines.append("上一周没有待完成的日子了，已按完成情况排好下一周。")
         elif created_plan:
-            lines.append("已按当前水平排好 7 天，从最弱的一块开始。")
+            lines.append("已排好 7 天。")
         lines.append(f"接下来 {day.minutes} 分钟：第 {day.day_index} 天，只练{label}。")
         lines.append("做到这几件就算完成：")
         lines.extend(f"- {bullet}" for bullet in bullets)
@@ -80,7 +80,7 @@ def intro_lines(
     if replanned:
         lines.append("The week had nothing left, so the next week is ready.")
     elif created_plan:
-        lines.append("A 7-day plan is ready, starting from the weakest topic.")
+        lines.append("A 7-day plan is ready.")
     lines.append(f"Next {day.minutes} minutes: day {day.day_index}, {label} only.")
     lines.append("Done when:")
     lines.extend(f"- {bullet}" for bullet in bullets)
@@ -98,8 +98,16 @@ def format_missing(missing: tuple[str, ...] | list[str], lang: str) -> str:
 
 def no_profile_text(lang: str) -> str:
     if lang == "zh":
-        return "还没有学习画像。\n下一步：interview-coach profile init --name 你的名字 --role 后端"
-    return "No profile yet.\nNext: interview-coach profile init --name YourName --role backend"
+        return (
+            "还没有学习画像。\n"
+            "下一步：interview-coach start --name 你的名字 --role 后端\n"
+            "或：interview-coach profile init --name 你的名字 --role 后端"
+        )
+    return (
+        "No profile yet.\n"
+        "Next: interview-coach start --name YourName --role backend\n"
+        "Or: interview-coach profile init --name YourName --role backend"
+    )
 
 
 def closing_lines(
